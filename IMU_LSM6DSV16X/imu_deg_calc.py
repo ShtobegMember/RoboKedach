@@ -268,8 +268,8 @@ def process_robotics_logic(imu_angles, data, dt):
 
     # Example: Simple print to verify high-range data
     # We use :>7.2f to format the numbers nicely (align right, 2 decimal places)
-    print(f"Acc: {data['ax']:>7.2f} {data['ay']:>7.2f} {data['az']:>7.2f} | "
-          f"Gyr: {data['gx']:>7.2f} {data['gy']:>7.2f} {data['gz']:>7.2f}")
+    # print(f"Acc: {data['ax']:>7.2f} {data['ay']:>7.2f} {data['az']:>7.2f} | "
+    #       f"Gyr: {data['gx']:>7.2f} {data['gy']:>7.2f} {data['gz']:>7.2f}")
 
     # 1. Extract Local Gyro Rates (Body Frame):
     #    Units: radians/second
@@ -289,7 +289,7 @@ def process_robotics_logic(imu_angles, data, dt):
 
     # Convert to degrees for display only
     deg = np.degrees(imu_angles)
-    # print(f"Roll: {deg[0]:>6.1f}° | Pitch: {deg[1]:>6.1f}° | Yaw: {deg[2]:>6.1f}°")
+    print(f"Roll: {deg[0]:>6.1f}° | Pitch: {deg[1]:>6.1f}° | Yaw: {deg[2]:>6.1f}°")
 
 
 # ------------------------------------------------------------------
