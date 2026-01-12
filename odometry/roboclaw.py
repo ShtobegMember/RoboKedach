@@ -3,18 +3,21 @@ import serial
 import struct
 import time
 
+
 class Roboclaw:
-	'Roboclaw Interface Class'
+	"""
+	Roboclaw Interface Class
+	"""
 	
 	def __init__(self, comport, rate, timeout=0.01, retries=3):
 		self.comport = comport
 		self.rate = rate
-		self.timeout = timeout;
+		self.timeout = timeout
 		self._trystimeout = retries
-		self._crc = 0;
+		self._crc = 0
 
-	#Command Enums
-	class Cmd():
+	# Command Enums
+	class Cmd:
 		M1FORWARD = 0
 		M1BACKWARD = 1
 		SETMINMB = 2
@@ -108,15 +111,15 @@ class Roboclaw:
 		WRITEEEPROM = 253
 		FLAGBOOTLOADER = 255
 			
-	#Private Functions
+	# Private Functions
 	def crc_clear(self):
 		self._crc = 0
 		return
 		
-	def crc_update(self,data):
+	def crc_update(self, data):
 		self._crc = self._crc ^ (data << 8)
 		for bit in range(0, 8):
-			if (self._crc&0x8000)  == 0x8000:
+			if (self._crc & 0x8000) == 0x8000:
 				self._crc = ((self._crc << 1) ^ 0x1021)
 			else:
 				self._crc = self._crc << 1
@@ -125,36 +128,33 @@ class Roboclaw:
 	def _sendcommand(self,address,command):
 		self.crc_clear()
 		self.crc_update(address)
-#		self._port.write(chr(address))
 		self._port.write(address.to_bytes(1, 'big'))
 		self.crc_update(command)
-#		self._port.write(chr(command))
 		self._port.write(command.to_bytes(1, 'big'))
 		return
 
 	def _readchecksumword(self):
 		data = self._port.read(2)
-		if len(data)==2:
-#			crc = (ord(data[0])<<8) | ord(data[1])
-			crc = (data[0]<<8) | data[1]
-			return (1,crc)	
-		return (0,0)
+		if len(data) == 2:
+			crc = (data[0] << 8) | data[1]
+			return 1, crc
+		return 0, 0
 		
 	def _readbyte(self):
 		data = self._port.read(1)
 		if len(data):
 			val = ord(data)
 			self.crc_update(val)
-			return (1,val)	
-		return (0,0)
+			return 1, val
+		return 0, 0
 		
 	def _readword(self):
 		val1 = self._readbyte()
 		if val1[0]:
 			val2 = self._readbyte()
 			if val2[0]:
-				return (1,val1[1]<<8|val2[1])
-		return (0,0)
+				return 1, val1[1] << 8 | val2[1]
+		return 0, 0
 
 	def _readlong(self):
 		val1 = self._readbyte()
@@ -165,76 +165,75 @@ class Roboclaw:
 				if val3[0]:
 					val4 = self._readbyte()
 					if val4[0]:
-						return (1,val1[1]<<24|val2[1]<<16|val3[1]<<8|val4[1])
-		return (0,0)	
+						return 1, val1[1] << 24 | val2[1] << 16 | val3[1] << 8 | val4[1]
+		return 0, 0
 
 	def _readslong(self):
 		val = self._readlong()
 		if val[0]:
-			if val[1]&0x80000000:
-				return (val[0],val[1]-0x100000000)
-			return (val[0],val[1])
-		return (0,0)
+			if val[1] & 0x80000000:
+				return val[0], val[1] - 0x100000000
+			return val[0], val[1]
+		return 0, 0
 
-	def _writebyte(self,val):
-		self.crc_update(val&0xFF)
-#		self._port.write(chr(val&0xFF))
+	def _writebyte(self, val):
+		self.crc_update(val & 0xFF)
 		self._port.write(val.to_bytes(1, 'big'))
 
-	def _writesbyte(self,val):
+	def _writesbyte(self, val):
 		self._writebyte(val)
 
-	def _writeword(self,val):
-		self._writebyte((val>>8)&0xFF)
-		self._writebyte(val&0xFF)
+	def _writeword(self, val):
+		self._writebyte((val >> 8) & 0xFF)
+		self._writebyte(val & 0xFF)
 		
-	def _writesword(self,val):
+	def _writesword(self, val):
 		self._writeword(val)
 
-	def _writelong(self,val):
-		self._writebyte((val>>24)&0xFF)
-		self._writebyte((val>>16)&0xFF)
-		self._writebyte((val>>8)&0xFF)
-		self._writebyte(val&0xFF)
+	def _writelong(self, val):
+		self._writebyte((val >> 24) & 0xFF)
+		self._writebyte((val >> 16) & 0xFF)
+		self._writebyte((val >> 8) & 0xFF)
+		self._writebyte(val & 0xFF)
 
-	def _writeslong(self,val):
+	def _writeslong(self, val):
 		self._writelong(val)
 
-	def _read1(self,address,cmd):
+	def _read1(self,address, cmd):
 		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			val1 = self._readbyte()
 			if val1[0]:
 				crc = self._readchecksumword()
 				if crc[0]:
-					if self._crc&0xFFFF!=crc[1]&0xFFFF:
-						return (0,0)
-					return (1,val1[1])
-			trys-=1
-			if trys==0:
+					if self._crc & 0xFFFF != crc[1] & 0xFFFF:
+						return 0, 0
+					return 1, val1[1]
+			trys -= 1
+			if trys == 0:
 				break
-		return (0,0)
+		return 0, 0
 
-	def _read2(self,address,cmd):
+	def _read2(self, address, cmd):
 		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			val1 = self._readword()
 			if val1[0]:
 				crc = self._readchecksumword()
 				if crc[0]:
-					if self._crc&0xFFFF!=crc[1]&0xFFFF:
-						return (0,0)
-					return (1,val1[1])
-			trys-=1
-			if trys==0:
+					if self._crc & 0xFFFF != crc[1] & 0xFFFF:
+						return 0, 0
+					return 1, val1[1]
+			trys -= 1
+			if trys == 0:
 				break
-		return (0,0)
+		return 0, 0
 
-	def _read4(self,address,cmd):
+	def _read4(self, address, cmd):
 		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
@@ -243,173 +242,173 @@ class Roboclaw:
 			if val1[0]:
 				crc = self._readchecksumword()
 				if crc[0]:
-					if self._crc&0xFFFF!=crc[1]&0xFFFF:
-						return (0,0)
-					return (1,val1[1])
-			trys-=1
-			if trys==0:
+					if self._crc & 0xFFFF != crc[1] & 0xFFFF:
+						return 0, 0
+					return 1, val1[1]
+			trys -= 1
+			if trys == 0:
 				break
-		return (0,0)
+		return 0, 0
 
-	def _read4_1(self,address,cmd):
+	def _read4_1(self, address, cmd):
 		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			val1 = self._readslong()
 			if val1[0]:
 				val2 = self._readbyte()
 				if val2[0]:
 					crc = self._readchecksumword()
 					if crc[0]:
-						if self._crc&0xFFFF!=crc[1]&0xFFFF:
-							return (0,0)
-						return (1,val1[1],val2[1])
-			trys-=1
-			if trys==0:
+						if self._crc & 0xFFFF != crc[1] & 0xFFFF:
+							return 0, 0
+						return 1, val1[1], val2[1]
+			trys -= 1
+			if trys == 0:
 				break
-		return (0,0)
+		return 0, 0
 
-	def _read_n(self,address,cmd,args):
+	def _read_n(self, address, cmd, args):
 		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
-			trys-=1
-			if trys==0:
+			trys -= 1
+			if trys == 0:
 				break
-			failed=False
-			self._sendcommand(address,cmd)
+			failed = False
+			self._sendcommand(address, cmd)
 			data = [1,]
-			for i in range(0,args):
+			for i in range(0, args):
 				val = self._readlong()
-				if val[0]==0:
-					failed=True
+				if val[0] == 0:
+					failed = True
 					break
 				data.append(val[1])
 			if failed:
 				continue
 			crc = self._readchecksumword()
 			if crc[0]:
-				if self._crc&0xFFFF==crc[1]&0xFFFF:
-					return (data);
-		return (0,0,0,0,0)
+				if self._crc & 0xFFFF == crc[1] & 0xFFFF:
+					return data
+		return 0, 0, 0, 0, 0
 
 	def _writechecksum(self):
-		self._writeword(self._crc&0xFFFF)
+		self._writeword(self._crc & 0xFFFF)
 		val = self._readbyte()
-		if(len(val)>0):
+		if len(val) > 0:
 			if val[0]:
 				return True
 		return False
 
-	def _write0(self,address,cmd):
-		trys=self._trystimeout
+	def _write0(self, address, cmd):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write1(self,address,cmd,val):
-		trys=self._trystimeout
+	def _write1(self, address, cmd, val):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writebyte(val)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write11(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _write11(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writebyte(val1)
 			self._writebyte(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write111(self,address,cmd,val1,val2,val3):
-		trys=self._trystimeout
+	def _write111(self, address, cmd, val1, val2, val3):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writebyte(val1)
 			self._writebyte(val2)
 			self._writebyte(val3)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write2(self,address,cmd,val):
-		trys=self._trystimeout
+	def _write2(self, address, cmd, val):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writeword(val)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS2(self,address,cmd,val):
-		trys=self._trystimeout
+	def _writeS2(self, address, cmd, val):
+		trys = self._trystimeout
 		while trys:
 			self._sendcommand(address,cmd)
 			self._writesword(val)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write22(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _write22(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writeword(val1)
 			self._writeword(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS22(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _writeS22(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writesword(val1)
 			self._writeword(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS2S2(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _writeS2S2(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
 			self._sendcommand(address,cmd)
 			self._writesword(val1)
 			self._writesword(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS24(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _writeS24(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writesword(val1)
 			self._writelong(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS24S24(self,address,cmd,val1,val2,val3,val4):
-		trys=self._trystimeout
+	def _writeS24S24(self, address, cmd, val1, val2, val3, val4):
+		trys = self._trystimeout
 		while trys:
 			self._sendcommand(address,cmd)
 			self._writesword(val1)
@@ -418,141 +417,141 @@ class Roboclaw:
 			self._writelong(val4)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4(self,address,cmd,val):
-		trys=self._trystimeout
+	def _write4(self, address, cmd, val):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS4(self,address,cmd,val):
-		trys=self._trystimeout
+	def _writeS4(self, address, cmd, val):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writeslong(val)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write44(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _write44(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S4(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _write4S4(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS4S4(self,address,cmd,val1,val2):
-		trys=self._trystimeout
+	def _writeS4S4(self, address, cmd, val1, val2):
+		trys = self._trystimeout
 		while trys:
 			self._sendcommand(address,cmd)
 			self._writeslong(val1)
 			self._writeslong(val2)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write441(self,address,cmd,val1,val2,val3):
-		trys=self._trystimeout
+	def _write441(self, address, cmd, val1, val2, val3):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			self._writebyte(val3)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS441(self,address,cmd,val1,val2,val3):
-		trys=self._trystimeout
+	def _writeS441(self, address, cmd, val1, val2, val3):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writeslong(val1)
 			self._writelong(val2)
 			self._writebyte(val3)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S4S4(self,address,cmd,val1,val2,val3):
-		trys=self._trystimeout
+	def _write4S4S4(self, address, cmd, val1, val2, val3):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writeslong(val3)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S441(self,address,cmd,val1,val2,val3,val4):
-		trys=self._trystimeout
+	def _write4S441(self, address, cmd, val1, val2, val3, val4):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writelong(val3)
 			self._writebyte(val4)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4444(self,address,cmd,val1,val2,val3,val4):
-		trys=self._trystimeout
+	def _write4444(self, address, cmd, val1, val2, val3, val4):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			self._writelong(val3)
 			self._writelong(val4)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S44S4(self,address,cmd,val1,val2,val3,val4):
-		trys=self._trystimeout
+	def _write4S44S4(self, address, cmd, val1, val2, val3, val4):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writelong(val3)
 			self._writeslong(val4)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write44441(self,address,cmd,val1,val2,val3,val4,val5):
-		trys=self._trystimeout
+	def _write44441(self, address, cmd, val1, val2, val3, val4, val5):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			self._writelong(val3)
@@ -560,13 +559,13 @@ class Roboclaw:
 			self._writebyte(val5)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _writeS44S441(self,address,cmd,val1,val2,val3,val4,val5):
-		trys=self._trystimeout
+	def _writeS44S441(self, address, cmd, val1, val2, val3, val4, val5):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writeslong(val1)
 			self._writelong(val2)
 			self._writeslong(val3)
@@ -574,13 +573,13 @@ class Roboclaw:
 			self._writebyte(val5)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S44S441(self,address,cmd,val1,val2,val3,val4,val5,val6):
-		trys=self._trystimeout
+	def _write4S44S441(self, address, cmd, val1, val2, val3, val4, val5, val6):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writelong(val3)
@@ -589,13 +588,13 @@ class Roboclaw:
 			self._writebyte(val6)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4S444S441(self,address,cmd,val1,val2,val3,val4,val5,val6,val7):
-		trys=self._trystimeout
+	def _write4S444S441(self, address, cmd, val1, val2, val3, val4, val5, val6, val7):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(self,address,cmd)
+			self._sendcommand(self, address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writelong(val3)
@@ -605,13 +604,13 @@ class Roboclaw:
 			self._writebyte(val7)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write4444444(self,address,cmd,val1,val2,val3,val4,val5,val6,val7):
-		trys=self._trystimeout
+	def _write4444444(self, address, cmd, val1, val2, val3, val4, val5, val6, val7):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			self._writelong(val3)
@@ -621,13 +620,13 @@ class Roboclaw:
 			self._writelong(val7)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	def _write444444441(self,address,cmd,val1,val2,val3,val4,val5,val6,val7,val8,val9):
-		trys=self._trystimeout
+	def _write444444441(self, address, cmd, val1, val2, val3, val4, val5, val6, val7, val8, val9):
+		trys = self._trystimeout
 		while trys:
-			self._sendcommand(address,cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writelong(val2)
 			self._writelong(val3)
@@ -639,172 +638,168 @@ class Roboclaw:
 			self._writebyte(val9)
 			if self._writechecksum():
 				return True
-			trys=trys-1
+			trys = trys-1
 		return False
 
-	#User accessible functions
-	def SendRandomData(self,cnt):
-		for i in range(0,cnt):
+	# User accessible functions
+	def SendRandomData(self, cnt):
+		for i in range(0, cnt):
 			byte = random.getrandbits(8)
-#			self._port.write(chr(byte))
 			self._port.write(byte.to_bytes(1, 'big'))
 		return
 
-	def ForwardM1(self,address,val):
-		return self._write1(address,self.Cmd.M1FORWARD,val)
+	def ForwardM1(self, address, val):
+		return self._write1(address, self.Cmd.M1FORWARD, val)
 
-	def BackwardM1(self,address,val):
-		return self._write1(address,self.Cmd.M1BACKWARD,val)
+	def BackwardM1(self, address, val):
+		return self._write1(address, self.Cmd.M1BACKWARD, val)
 
-	def SetMinVoltageMainBattery(self,address,val):
-		return self._write1(address,self.Cmd.SETMINMB,val)
+	def SetMinVoltageMainBattery(self, address, val):
+		return self._write1(address, self.Cmd.SETMINMB, val)
 
-	def SetMaxVoltageMainBattery(self,address,val):
-		return self._write1(address,self.Cmd.SETMAXMB,val)
+	def SetMaxVoltageMainBattery(self, address, val):
+		return self._write1(address, self.Cmd.SETMAXMB, val)
 
-	def ForwardM2(self,address,val):
-		return self._write1(address,self.Cmd.M2FORWARD,val)
+	def ForwardM2(self, address, val):
+		return self._write1(address, self.Cmd.M2FORWARD, val)
 
-	def BackwardM2(self,address,val):
-		return self._write1(address,self.Cmd.M2BACKWARD,val)
+	def BackwardM2(self, address, val):
+		return self._write1(address, self.Cmd.M2BACKWARD, val)
 
-	def ForwardBackwardM1(self,address,val):
-		return self._write1(address,self.Cmd.M17BIT,val)
+	def ForwardBackwardM1(self, address, val):
+		return self._write1(address, self.Cmd.M17BIT, val)
 
-	def ForwardBackwardM2(self,address,val):
-		return self._write1(address,self.Cmd.M27BIT,val)
+	def ForwardBackwardM2(self, address, val):
+		return self._write1(address, self.Cmd.M27BIT, val)
 
-	def ForwardMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDFORWARD,val)
+	def ForwardMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDFORWARD, val)
 
-	def BackwardMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDBACKWARD,val)
+	def BackwardMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDBACKWARD, val)
 
-	def TurnRightMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDRIGHT,val)
+	def TurnRightMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDRIGHT, val)
 
-	def TurnLeftMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDLEFT,val)
+	def TurnLeftMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDLEFT, val)
 
-	def ForwardBackwardMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDFB,val)
+	def ForwardBackwardMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDFB, val)
 
-	def LeftRightMixed(self,address,val):
-		return self._write1(address,self.Cmd.MIXEDLR,val)
+	def LeftRightMixed(self, address, val):
+		return self._write1(address, self.Cmd.MIXEDLR, val)
 
-	def ReadEncM1(self,address):
-		return self._read4_1(address,self.Cmd.GETM1ENC)
+	def ReadEncM1(self, address):
+		return self._read4_1(address, self.Cmd.GETM1ENC)
 
-	def ReadEncM2(self,address):
-		return self._read4_1(address,self.Cmd.GETM2ENC)
+	def ReadEncM2(self, address):
+		return self._read4_1(address, self.Cmd.GETM2ENC)
 
-	def ReadSpeedM1(self,address):
-		return self._read4_1(address,self.Cmd.GETM1SPEED)
+	def ReadSpeedM1(self, address):
+		return self._read4_1(address, self.Cmd.GETM1SPEED)
 
-	def ReadSpeedM2(self,address):
-		return self._read4_1(address,self.Cmd.GETM2SPEED)
+	def ReadSpeedM2(self, address):
+		return self._read4_1(address, self.Cmd.GETM2SPEED)
 
-	def ResetEncoders(self,address):
-		return self._write0(address,self.Cmd.RESETENC)
+	def ResetEncoders(self, address):
+		return self._write0(address, self.Cmd.RESETENC)
 
-	def ReadVersion(self,address):
-		trys=self._trystimeout
+	def ReadVersion(self, address):
+		trys = self._trystimeout
 		while 1:
 			self._port.flushInput()
-			self._sendcommand(address,self.Cmd.GETVERSION)
+			self._sendcommand(address, self.Cmd.GETVERSION)
 			str = ""
 			passed = True
-			for i in range(0,48):
+			for i in range(0, 48):
 				data = self._port.read(1)
 				if len(data):
 					val = ord(data)
 					self.crc_update(val)
-					if(val==0):
+					if val == 0:
 						break
-#					str+=data[0]
-					str+=chr(data[0])
+					str += chr(data[0])
 				else:
 					passed = False
 					break
 			if passed:
 				crc = self._readchecksumword()
 				if crc[0]:
-					if self._crc&0xFFFF==crc[1]&0xFFFF:
-						return (1,str)
+					if self._crc & 0xFFFF == crc[1] & 0xFFFF:
+						return 1, str
 					else:
 						time.sleep(0.01)
-			trys-=1
-			if trys==0:
+			trys -= 1
+			if trys == 0:
 				break
-		return (0,0)
+		return 0, 0
 
-	def SetEncM1(self,address,cnt):
-		return self._write4(address,self.Cmd.SETM1ENCCOUNT,cnt)
+	def SetEncM1(self, address, cnt):
+		return self._write4(address, self.Cmd.SETM1ENCCOUNT, cnt)
 
-	def SetEncM2(self,address,cnt):
-		return self._write4(address,self.Cmd.SETM2ENCCOUNT,cnt)
+	def SetEncM2(self, address, cnt):
+		return self._write4(address, self.Cmd.SETM2ENCCOUNT, cnt)
 
-	def ReadMainBatteryVoltage(self,address):
-		return self._read2(address,self.Cmd.GETMBATT)
+	def ReadMainBatteryVoltage(self, address):
+		return self._read2(address, self.Cmd.GETMBATT)
 
-	def ReadLogicBatteryVoltage(self,address,):
-		return self._read2(address,self.Cmd.GETLBATT)
+	def ReadLogicBatteryVoltage(self, address,):
+		return self._read2(address, self.Cmd.GETLBATT)
 
-	def SetMinVoltageLogicBattery(self,address,val):
-		return self._write1(address,self.Cmd.SETMINLB,val)
+	def SetMinVoltageLogicBattery(self, address, val):
+		return self._write1(address, self.Cmd.SETMINLB, val)
 
-	def SetMaxVoltageLogicBattery(self,address,val):
-		return self._write1(address,self.Cmd.SETMAXLB,val)
+	def SetMaxVoltageLogicBattery(self, address, val):
+		return self._write1(address, self.Cmd.SETMAXLB, val)
 
-	def SetM1VelocityPID(self,address,p,i,d,qpps):
-#		return self._write4444(address,self.Cmd.SETM1PID,long(d*65536),long(p*65536),long(i*65536),qpps)
-		return self._write4444(address,self.Cmd.SETM1PID,d*65536,p*65536,i*65536,qpps)
+	def SetM1VelocityPID(self, address, p, i, d, qpps):
+		return self._write4444(address, self.Cmd.SETM1PID, d*65536, p*65536, i*65536, qpps)
 
-	def SetM2VelocityPID(self,address,p,i,d,qpps):
-#		return self._write4444(address,self.Cmd.SETM2PID,long(d*65536),long(p*65536),long(i*65536),qpps)
-		return self._write4444(address,self.Cmd.SETM2PID,d*65536,p*65536,i*65536,qpps)
+	def SetM2VelocityPID(self, address, p, i, d, qpps):
+		return self._write4444(address, self.Cmd.SETM2PID, d*65536, p*65536, i*65536, qpps)
 
-	def ReadISpeedM1(self,address):
-		return self._read4_1(address,self.Cmd.GETM1ISPEED)
+	def ReadISpeedM1(self, address):
+		return self._read4_1(address, self.Cmd.GETM1ISPEED)
 
-	def ReadISpeedM2(self,address):
-		return self._read4_1(address,self.Cmd.GETM2ISPEED)
+	def ReadISpeedM2(self, address):
+		return self._read4_1(address, self.Cmd.GETM2ISPEED)
 
-	def DutyM1(self,address,val):
-		return self._writeS2(address,self.Cmd.M1DUTY,val)
+	def DutyM1(self,address, val):
+		return self._writeS2(address, self.Cmd.M1DUTY, val)
 
-	def DutyM2(self,address,val):
-		return self._writeS2(address,self.Cmd.M2DUTY,val)
+	def DutyM2(self, address, val):
+		return self._writeS2(address, self.Cmd.M2DUTY, val)
 
-	def DutyM1M2(self,address,m1,m2):
-		return self._writeS2S2(address,self.Cmd.MIXEDDUTY,m1,m2)
+	def DutyM1M2(self, address, m1, m2):
+		return self._writeS2S2(address, self.Cmd.MIXEDDUTY, m1, m2)
 
-	def SpeedM1(self,address,val):
-		return self._writeS4(address,self.Cmd.M1SPEED,val)
+	def SpeedM1(self, address, val):
+		return self._writeS4(address, self.Cmd.M1SPEED, val)
 
-	def SpeedM2(self,address,val):
-		return self._writeS4(address,self.Cmd.M2SPEED,val)
+	def SpeedM2(self, address, val):
+		return self._writeS4(address, self.Cmd.M2SPEED, val)
 
-	def SpeedM1M2(self,address,m1,m2):
-		return self._writeS4S4(address,self.Cmd.MIXEDSPEED,m1,m2)
+	def SpeedM1M2(self, address, m1, m2):
+		return self._writeS4S4(address, self.Cmd.MIXEDSPEED, m1, m2)
 
-	def SpeedAccelM1(self,address,accel,speed):
-		return self._write4S4(address,self.Cmd.M1SPEEDACCEL,accel,speed)
+	def SpeedAccelM1(self, address, accel, speed):
+		return self._write4S4(address, self.Cmd.M1SPEEDACCEL, accel, speed)
 
-	def SpeedAccelM2(self,address,accel,speed):
-		return self._write4S4(address,self.Cmd.M2SPEEDACCEL,accel,speed)
+	def SpeedAccelM2(self, address, accel, speed):
+		return self._write4S4(address, self.Cmd.M2SPEEDACCEL, accel, speed)
 
-	def SpeedAccelM1M2(self,address,accel,speed1,speed2):
-		return self._write4S4S4(address,self.Cmd.MIXEDSPEEDACCEL,accel,speed1,speed2)
+	def SpeedAccelM1M2(self, address, accel, speed1, speed2):
+		return self._write4S4S4(address, self.Cmd.MIXEDSPEEDACCEL, accel, speed1, speed2)
 
-	def SpeedDistanceM1(self,address,speed,distance,buffer):
-		return self._writeS441(address,self.Cmd.M1SPEEDDIST,speed,distance,buffer)
+	def SpeedDistanceM1(self, address, speed, distance, buffer):
+		return self._writeS441(address, self.Cmd.M1SPEEDDIST, speed, distance, buffer)
 
-	def SpeedDistanceM2(self,address,speed,distance,buffer):
-		return self._writeS441(address,self.Cmd.M2SPEEDDIST,speed,distance,buffer)
+	def SpeedDistanceM2(self, address, speed, distance, buffer):
+		return self._writeS441(address, self.Cmd.M2SPEEDDIST, speed, distance, buffer)
 
-	def SpeedDistanceM1M2(self,address,speed1,distance1,speed2,distance2,buffer):
-		return self._writeS44S441(address,self.Cmd.MIXEDSPEEDDIST,speed1,distance1,speed2,distance2,buffer)
+	def SpeedDistanceM1M2(self, address, speed1, distance1, speed2, distance2, buffer):
+		return self._writeS44S441(address, self.Cmd.MIXEDSPEEDDIST, speed1, distance1, speed2, distance2, buffer)
 
 	def SpeedAccelDistanceM1(self,address,accel,speed,distance,buffer):
 		return self._write4S441(address,self.Cmd.M1SPEEDACCELDIST,accel,speed,distance,buffer)
