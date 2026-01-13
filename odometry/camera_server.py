@@ -43,7 +43,7 @@ def reset_camera_hardware():
             )
             print("CAM: Hardware kickstart successful.")
 
-        except:
+        except Exception:
             print("CAM: Hardware kickstart skipped (v4l2-ctl not installed or failed).")
     else:
         print("CAM: WARNING! /dev/video0 does not exist.")

@@ -151,9 +151,9 @@ class LSM6DSV16X:
 
                     # Gyro: Raw * Sensitivity -> radians/second
                     # Note: We convert to radians here for cleaner math later
-                    'gx': -np.radians(raw_gx * GYRO_SENSITIVITY),
+                    'gx': np.radians(raw_gx * GYRO_SENSITIVITY),
                     'gy': -np.radians(raw_gy * GYRO_SENSITIVITY),
-                    'gz': np.radians(raw_gz * GYRO_SENSITIVITY)
+                    'gz': -np.radians(raw_gz * GYRO_SENSITIVITY)
                 }
                 return data
 

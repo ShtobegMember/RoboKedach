@@ -154,9 +154,9 @@
 #                     'az': raw_az * ACCEL_SENSITIVITY,
 #
 #                     # Gyro: Raw * Sensitivity -> radians/second
-#                     'gx': -np.radians(raw_gx * GYRO_SENSITIVITY),
+#                     'gx': np.radians(raw_gx * GYRO_SENSITIVITY),
 #                     'gy': -np.radians(raw_gy * GYRO_SENSITIVITY),
-#                     'gz': np.radians(raw_gz * GYRO_SENSITIVITY)
+#                     'gz': -np.radians(raw_gz * GYRO_SENSITIVITY)
 #                 }
 #                 return data
 #

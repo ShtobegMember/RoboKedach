@@ -22,20 +22,30 @@ from roboclaw import Roboclaw
 # HELP & PROGRESS PRINTS
 # ==============================================================================
 
-HELP_TEXT = """
-============================================================
-🤖 ROBOT CONTROL INTERFACE
-============================================================
-Navigation:
-  ARROWS       - Full Cycle (360°)
-  SHIFT+ARROWS - Quarter Cycle (90°)
-  SPACE        - Abort Movement
-Speed:
-  +/-          - Adjust Speed
-Utils:
-  s - Status | r - Reset Enc | q - Quit
-============================================================
-"""
+def display_help():
+    print("\n" + "=" * 60)
+    print("🤖 ROBOT CONTROL INTERFACE")
+    print("=" * 60)
+    print("Navigation (360° turns):")
+    print("  ↑  - Forward (both motors)")
+    print("  ←  - Turn Left (M2 only)")
+    print("  →  - Turn Right (M1 only)")
+    print("  ↓  - Backward (both motors)")
+    print("\nNavigation (90° turns - HOLD SHIFT):")
+    print("  Shift+↑  - Forward 90°")
+    print("  Shift+←  - Turn Left 90°")
+    print("  Shift+→  - Turn Right 90°")
+    print("  Shift+↓  - Backward 90°")
+    print("\nSpeed Control:")
+    print("  +  - Increase speed")
+    print("  -  - Decrease speed")
+    print("\nOther:")
+    print("  SPACE - Abort current movement")
+    print("  h     - Show this help")
+    print("  s     - Show status")
+    print("  r     - Reset encoders")
+    print("  q     - Quit")
+    print("=" * 60 + "\n")
 
 
 def display_progress(cur1: int, tgt1: int, cur2: int, tgt2: int) -> None:
@@ -384,7 +394,7 @@ class RobotInterface:
         except IOError as e:
             print(f"Error reading status: {e}")
 
-    def _get_status_line(self):
+    def get_status_line(self):
         """
         Generates the text for the idle loop. Can be overridden.
         """
@@ -427,7 +437,7 @@ class RobotInterface:
 
         # Utility commands
         elif key.lower() == 'h':
-            print(HELP_TEXT)
+            display_help()
         elif key.lower() == 's':
             self.display_status()
         elif key.lower() == 'r':
@@ -441,12 +451,12 @@ class RobotInterface:
         Main control loop.
         """
 
-        print(HELP_TEXT)
+        display_help()
 
         try:
             while self.running:
                 # Use the new helper method instead of hardcoded text
-                print(f"\r{self._get_status_line()}", end="")
+                print(f"\r{self.get_status_line()}", end="")
 
                 key = get_key()
                 if key:

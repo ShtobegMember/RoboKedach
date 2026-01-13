@@ -11,6 +11,11 @@ import math  # Needed for cos/sin calculations
 from camera_server import start_camera_thread
 from imu_thread import IMUThread
 from robot_controller import RobotConfig, RobotInterface
+from web_plotter import WebPlotter
+
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 
 def main():
@@ -22,7 +27,7 @@ def main():
 
     # Give the camera a moment to warm up
     print("Waiting for camera warmup...")
-    time.sleep(3)
+    time.sleep(1)
 
     # ---------------------------------------------------------
     # 2. Start IMU (Thread 2)
@@ -43,7 +48,15 @@ def main():
     imu_thread.start()
 
     # ---------------------------------------------------------
-    # 3. Start Movement Interface (Main Thread)
+    # 3. Start Web Plotter
+    # ---------------------------------------------------------
+
+    print("Initializing Web Plotter...")
+    # Starts the web server in the background (port 5001)
+    plotter = WebPlotter(port=5001)
+
+    # ---------------------------------------------------------
+    # 4. Start Movement Interface (Main Thread)
     # ---------------------------------------------------------
 
     print("\nStarting Robot Control Interface...")
@@ -98,6 +111,8 @@ def main():
                 robot_pos['x'] += dist * math.cos(yaw_rad)
                 robot_pos['y'] += dist * math.sin(yaw_rad)
 
+                plotter.update(robot_pos['x'], robot_pos['y'])
+
             else:
                 # For all other keys (Turn, Backward, etc.), just move without updating X/Y
                 original_handle_command(key)
@@ -136,7 +151,18 @@ def main():
                     f"XY:({robot_pos['x']:.3f}, {robot_pos['y']:.3f}) | "
                     f"📐 Yaw:{y:5.1f}° | Ready...\n")
 
-        interface._get_status_line = custom_live_line
+        interface.get_status_line = custom_live_line
+
+        # ---------------------------------------------------------
+        print("\n\n\n\n" + "=" * 40)
+        print("🚀 SYSTEM READY")
+        print("=" * 40)
+        print(f"🎥 Camera Stream: http://0.0.0.0:5000")
+        print(f"🗺️ Live Plotter:  http://0.0.0.0:5001")
+        print("-" * 40)
+        print("Controls active. Press 'q' to quit.")
+        print("=" * 40)
+        # ---------------------------------------------------------
 
         # =========================================================
 
