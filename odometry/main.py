@@ -157,7 +157,7 @@ def main():
         print("\n\n\n\n" + "=" * 40)
         print("🚀 SYSTEM READY")
         print("=" * 40)
-        print(f"🎥 Camera Stream: http://0.0.0.0:5000")
+        print(f"🎥 Camera Stream: http://10.138.117.198:5000")
         print(f"🗺️ Live Plotter:  http://0.0.0.0:5001")
         print("-" * 40)
         print("Controls active. Press 'q' to quit.")
