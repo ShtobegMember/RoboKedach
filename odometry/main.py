@@ -6,16 +6,12 @@ Orchestrator script with live IMU integration and 2D Odometry (X, Y).
 
 import time
 import sys
-import math  # Needed for cos/sin calculations
+import math
 
 from camera_server import start_camera_thread
 from imu_thread import IMUThread
 from robot_controller import RobotConfig, RobotInterface
 from web_plotter import WebPlotter
-
-import logging
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
 
 
 def main():

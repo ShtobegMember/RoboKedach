@@ -2,17 +2,21 @@
 web_plotter.py
 --------------
 Headless Matplotlib Plotter served via Flask.
+Uses Object-Oriented Matplotlib and Smart Caching to ensure 
+rendering only happens AFTER a movement finishes.
 """
 
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import io
 import threading
-from flask import Flask, send_file
+from flask import Flask, send_file, make_response
+import matplotlib.ticker as ticker
 
-# Force headless backend (Must be before importing pyplot)
-matplotlib.use('Agg')
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 
 class WebPlotter:
@@ -20,27 +24,30 @@ class WebPlotter:
         self.port = port
         self.app = Flask(__name__)
 
-        # Data Storage (Protected by lock)
+        # Data Storage
         self.lock = threading.Lock()
         self.x_history = [0.0]
         self.y_history = [0.0]
         self.current_x = 0.0
         self.current_y = 0.0
 
-        # Configure Routes
+        # --- NEW: Smart Caching Variables ---
+        self.needs_render = True
+        self.cached_image = None
+        # ------------------------------------
+
         self.add_routes()
 
-        # Start Server in Background Thread
         self.server_thread = threading.Thread(target=self.run_server)
         self.server_thread.daemon = True
         self.server_thread.start()
-        # print(f"📊 Plotter Server running at http://0.0.0.0:{self.port}")
 
     def add_routes(self):
         @self.app.route('/')
         def index():
-            # Simple HTML that auto-refreshes the image every 500ms
-            return """
+            # You can safely put this back to 500ms now if you want it to feel 
+            # more responsive, because redundant requests cost zero CPU!
+            html_content = """
             <html>
                 <head><title>Robot Path</title></head>
                 <body style="text-align:center; font-family:sans-serif;">
@@ -50,20 +57,25 @@ class WebPlotter:
                         setInterval(function() {
                             var img = document.getElementById('plot');
                             img.src = '/plot.png?rand=' + Math.random();
-                        }, 500);
+                        }, 1000); 
                     </script>
                 </body>
             </html>
             """
+            response = make_response(html_content)
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return response
 
         @self.app.route('/plot.png')
         def plot_png():
-            # Generate the plot on-demand (does not block robot loop)
-            return self.generate_image()
+            response = self.generate_image()
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return response
 
     def update(self, x, y):
         """
-        Quickly stores data. Extremely fast, won't lag robot.
+        Stores data and trips the flag so the next web request renders the new path.
+        This is ONLY called by main.py after the motors stop moving.
         """
 
         with self.lock:
@@ -71,14 +83,28 @@ class WebPlotter:
             self.y_history.append(y)
             self.current_x = x
             self.current_y = y
+            
+            # --- NEW: Tell the server the data changed ---
+            self.needs_render = True
 
     def generate_image(self):
         """
-        Draws the plot to an in-memory image buffer.
+        Draws the plot. Only runs Matplotlib if the robot actually moved.
         """
+        
+        # --- NEW: Check the Cache first! ---
+        with self.lock:
+            if not self.needs_render and self.cached_image is not None:
+                # The robot hasn't moved. Instantly return the old picture.
+                # This uses almost ZERO CPU.
+                output = io.BytesIO(self.cached_image)
+                return send_file(output, mimetype='image/png')
+        # -----------------------------------
 
-        # Create a new figure (thread-safe approach)
-        fig, ax = plt.subplots(figsize=(6, 6))
+        # If we reach here, it means the robot moved. Do the heavy rendering.
+        fig = Figure(figsize=(6, 6))
+        FigureCanvasAgg(fig) 
+        ax = fig.add_subplot(111)
 
         with self.lock:
             xs = list(self.x_history)
@@ -111,11 +137,14 @@ class WebPlotter:
         # Save to buffer
         output = io.BytesIO()
         fig.savefig(output, format='png')
-        plt.close(fig)  # Cleanup memory
         output.seek(0)
+        
+        # --- NEW: Save to cache and reset flag ---
+        with self.lock:
+            self.cached_image = output.getvalue()
+            self.needs_render = False
 
         return send_file(output, mimetype='image/png')
 
     def run_server(self):
-        # Run Flask without the reloader so it doesn't spawn extra threads
         self.app.run(host='0.0.0.0', port=self.port, debug=False, use_reloader=False)
