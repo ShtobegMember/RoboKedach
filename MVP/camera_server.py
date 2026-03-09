@@ -1,8 +1,8 @@
 """
-camera_server.py
-----------------
-Aggressive Camera Driver with Broadcaster Pattern.
-Fixes deadlocks and allows multiple simultaneous viewers safely.
+camera_server.py - MJPEG camera streaming server with broadcaster pattern.
+A dedicated reader thread owns the camera and updates a shared frame buffer.
+Web clients grab the latest frame without touching the camera directly,
+preventing deadlocks and allowing multiple simultaneous viewers.
 """
 
 import cv2
@@ -15,25 +15,24 @@ from flask import Flask, Response
 
 app = Flask(__name__)
 
-# --- GLOBAL STATE ---
+# --- Global State ---
 camera = None
 is_running = True
 
-# Variables for the Broadcaster pattern
+# Shared frame buffer — written by reader thread, read by web clients
 current_frame = None
-frame_lock = threading.Lock()  # Protects the current_frame variable, NOT the camera
+frame_lock = threading.Lock()
 
 
 def reset_camera_hardware():
     """
-    Nuclear option: Uses system tools to reset the video device state
-    before OpenCV tries to touch it. This clears 'select() timeout' locks.
+    Force-reset the video device at the driver level.
+    Grabs a single frame via v4l2-ctl to unfreeze a stuck ISP
+    (Image Signal Processor), clearing 'select() timeout' locks.
     """
     if os.path.exists('/dev/video0'):
         print("CAM: Found /dev/video0. Attempting hardware kickstart...")
         try:
-            # This 'jogs' the driver by grabbing 1 frame at the driver level
-            # It often unfreezes a stuck ISP (Image Signal Processor).
             subprocess.run(
                 ["v4l2-ctl", "-d", "/dev/video0", "--stream-mmap", "--stream-count=1"],
                 stdout=subprocess.DEVNULL,
@@ -49,44 +48,36 @@ def reset_camera_hardware():
 
 def open_camera():
     """
-    Opens the camera with specific, hard-coded settings that are known
-    to work on Raspberry Pi legacy stack.
+    Open the camera with settings known to work on RPi legacy stack.
+    Uses MJPG pixel format at 640x480 to avoid 'select() timeout' errors.
     """
-    # 1. Force index 0. Do not guess.
     idx = 0
-    
-    # 2. Open with V4L2 backend
+
+    # Open with V4L2 backend explicitly
     cam = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-    
+
     if not cam.isOpened():
         return None
-    
-    # 3. CRITICAL: Set Pixel Format to MJPG *BEFORE* setting resolution
-    # This fixes the 'select() timeout' by using compressed video
+
+    # Set MJPG format BEFORE resolution — order matters for the driver
     cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-    
-    # 4. CRITICAL: Set Resolution to 640x480
-    # Your diagnostic proved 640x480 works. 320x240 likely caused the crash.
+
+    # 640x480 is hardware-safe; lower resolutions can crash the driver
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    
-    # 5. Set FPS
+
     cam.set(cv2.CAP_PROP_FPS, 30)
-    
-    # 6. Buffer size
-    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    
+    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency
+
     return cam
 
 
 def release_camera():
-    """
-    Cleans up the camera resource when the program exits.
-    """
+    """Release camera resources on program exit."""
     global camera, is_running
-    is_running = False  # Tell the reader thread to stop
-    time.sleep(0.1)  # Give the reader thread time to see the flag and exit its loop
-    
+    is_running = False
+    time.sleep(0.1)  # Give reader thread time to exit its loop
+
     if camera and camera.isOpened():
         print("CAM: Releasing resource...")
         camera.release()
@@ -97,49 +88,47 @@ atexit.register(release_camera)
 
 def camera_reader_worker():
     """
-    This thread OWNS the camera. It constantly reads and updates current_frame.
+    Dedicated camera reader thread — the ONLY thread that touches the camera.
+    Continuously reads frames, processes them, and updates the shared buffer.
     """
     global camera, current_frame, is_running
 
     while is_running:
+        # Reconnect if camera is not available
         if camera is None or not camera.isOpened():
             camera = open_camera()
             if camera is None:
-                # If open fails, wait 2s before hammering the driver again
-                time.sleep(2)
+                time.sleep(2)  # Wait before retrying
                 continue
 
-        # Attempt Read (Only this thread ever reads, so it's perfectly safe)
         success, frame = camera.read()
 
         if not success:
-            # If read times out, the driver might be stuck.
+            # Read timeout — driver may be stuck, force reconnect
             print("CAM: Read failed (Timeout). Resetting...")
             if camera:
                 camera.release()
                 camera = None
-            time.sleep(1) # Cooldown
+            time.sleep(1)
             continue
 
         try:
-            # 1. Flip (Optional: Change to 0 or 1 if upside down)
+            # Flip 180° (camera is mounted upside-down)
             frame = cv2.flip(frame, -1)
-            
-            # 2. Resize output for bandwidth (Software scaling is safer than Hardware scaling)
-            # We capture at 640x480 (Hardware safe) -> Resize to 320x240 (Bandwidth safe)
+
+            # Downscale for bandwidth: capture at 640x480 (safe), serve at 320x240
             frame = cv2.resize(frame, (320, 240))
-            
-            # 3. Overlay
+
+            # Draw crosshair overlay at center
             h, w, _ = frame.shape
             cx, cy = w // 2, h // 2
             cv2.line(frame, (cx - 20, cy), (cx + 20, cy), (0, 255, 0), 2)
             cv2.line(frame, (cx, cy - 20), (cx, cy + 20), (0, 255, 0), 2)
             cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
 
-            # 4. Encode
+            # Encode to JPEG and update the shared buffer
             ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
             if ret:
-                # Quickly swap the global frame so web clients can see it
                 with frame_lock:
                     current_frame = buffer.tobytes()
 
@@ -150,58 +139,50 @@ def camera_reader_worker():
 
 def generate_frames():
     """
-    Web clients call this. It just grabs the latest pre-processed frame instantly.
+    Generator for the MJPEG stream — grabs the latest frame from the shared buffer.
+    Yields at ~20 FPS to avoid overloading the web server.
     """
     global is_running
-    
+
     while is_running:
         frame_data = None
-        
-        # Grab the latest picture from the broadcaster safely
+
         with frame_lock:
             frame_data = current_frame
 
         if frame_data is not None:
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_data + b'\r\n')
-        
-        # Stream at ~20 FPS. This prevents the web server from overloading the CPU
-        time.sleep(0.05)
+
+        time.sleep(0.05)  # ~20 FPS
 
 
 @app.route('/')
 def video_feed():
-    """
-    Flask route to serve the video stream.
-    """
+    """Flask route serving the MJPEG video stream."""
     response = Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
 
 def run_server():
-    """
-    Initializes hardware and starts the background threads.
-    """
+    """Initialize camera hardware and start both the reader thread and Flask server."""
     print("CAM: Server Thread Starting...")
-    
-    # Run the hardware reset once on startup
+
+    # Reset hardware once on startup to clear any stale driver state
     reset_camera_hardware()
 
-    # Start the dedicated camera reading thread
+    # Dedicated reader thread — owns the camera exclusively
     reader_thread = threading.Thread(target=camera_reader_worker)
     reader_thread.daemon = True
     reader_thread.start()
 
-    # Start Flask Web Server
-    # Host 0.0.0.0 is required to see it from another PC
+    # Flask web server — host 0.0.0.0 to allow access from other machines
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
 
 
 def start_camera_thread():
-    """
-    Starts the entire camera server system in a daemon thread.
-    """
+    """Start the entire camera server system in a daemon thread."""
     t = threading.Thread(target=run_server)
     t.daemon = True
     t.start()

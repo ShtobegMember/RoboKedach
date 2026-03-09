@@ -1,11 +1,6 @@
 """
-robot_controller.py
-------------------
-Main robotics control logic. Handles:
-1. RoboClaw motor control communication
-2. Encoder reading and wrapping
-3. Movement logic (Distance driving, Turning)
-4. Keyboard input handling
+robot_controller.py - Motor control, movement logic, and keyboard interface.
+Communicates with RoboClaw motor controller over serial for encoder-based distance driving.
 """
 
 import sys
@@ -19,10 +14,11 @@ from roboclaw import Roboclaw
 
 
 # ==============================================================================
-# HELP & PROGRESS PRINTS
+# HELP & PROGRESS DISPLAY
 # ==============================================================================
 
 def display_help():
+    """Print the full control reference to the terminal."""
     print("\n" + "=" * 60)
     print("🤖 ROBOT CONTROL INTERFACE")
     print("=" * 60)
@@ -49,10 +45,7 @@ def display_help():
 
 
 def display_progress(cur1: int, tgt1: int, cur2: int, tgt2: int) -> None:
-    """
-    Display movement progress percentage on single line.
-    """
-
+    """Display movement progress as percentage for both motors on a single line."""
     pct1 = 100 if tgt1 == 0 else min(100, abs(cur1) * 100 // abs(tgt1))
     pct2 = 100 if tgt2 == 0 else min(100, abs(cur2) * 100 // abs(tgt2))
     print(f"\r📊 M1: {pct1}% | M2: {pct2}%     ", end="")
@@ -64,49 +57,43 @@ def display_progress(cur1: int, tgt1: int, cur2: int, tgt2: int) -> None:
 
 @dataclass
 class RobotConfig:
-    """
-    Centralized robot configuration.
-    """
+    """Centralized hardware and control parameters for the robot."""
 
+    # Serial connection to the RoboClaw controller
     port: str = "/dev/ttyAMA0"
     baud_rate: int = 38400
     address: int = 0x80
 
-    # Motor direction corrections
+    # Motor direction corrections — both motors are mounted inverted
     m1_multiplier: int = -1
     m2_multiplier: int = -1
 
-    # Encoder settings
+    # Encoder ticks per full wheel rotation
     ticks_per_cycle: int = 5880
 
-    # Speed settings
+    # Speed settings (RoboClaw PWM range: 0–127)
     default_speed: int = 64
     min_speed: int = 10
     max_speed: int = 127
     speed_increment: int = 10
 
-    # Control settings
-    poll_interval: float = 0.01  # seconds between position checks
+    # Seconds between encoder polls during movement
+    poll_interval: float = 0.01
 
 
 class Direction(Enum):
-    """
-    Motor direction enumeration.
-    """
-
+    """Motor direction values for the RoboClaw."""
     STOP = 0
     FORWARD = 1
     BACKWARD = -1
 
 
 # ==============================================================================
-# MOTOR CONTROLLER CLASS
+# MOTOR CONTROLLER
 # ==============================================================================
 
 class MotorController:
-    """
-    Handles all RoboClaw motor control operations.
-    """
+    """Low-level motor operations: speed control, direction, and encoder reading."""
 
     def __init__(self, config: RobotConfig):
         self.config = config
@@ -119,19 +106,15 @@ class MotorController:
         self.reset_encoders()
 
     def reset_encoders(self) -> bool:
-        """
-        Reset encoder counts to zero.
-        """
-
+        """Reset both encoder counts to zero."""
         return self.rc.ResetEncoders(self.config.address)
 
     def read_encoders(self) -> Tuple[bool, int, int]:
         """
-        Read raw encoder values from both motors
+        Read raw encoder values from both motors.
+        Note: Hardware has M1/M2 swapped — ReadEncM1 returns M2 and vice versa.
         Returns: (success, m1_value, m2_value)
-        Note: Encoder readings are swapped in hardware - ReadEncM1 returns M2, ReadEncM2 returns M1
         """
-
         status1, enc2, _ = self.rc.ReadEncM1(self.config.address)
         status2, enc1, _ = self.rc.ReadEncM2(self.config.address)
 
@@ -142,16 +125,15 @@ class MotorController:
 
     def get_cycle_positions(self, full_rotation) -> Tuple[int, int]:
         """
-        Get the current position within the rotation cycle (0 to ticks_per_cycle).
-        Automatically handles direction correction and wrapping.
+        Get current position within a rotation cycle (wrapped to 0..full_rotation).
+        Applies direction correction and modular wrapping.
         """
-
         success, enc1_raw, enc2_raw = self.read_encoders()
 
         if not success:
             raise IOError("Failed to read encoders")
 
-        # Normalize direction (with extra negation for M1)
+        # Apply direction correction (M1 needs extra negation due to mounting)
         enc1_norm = -(enc1_raw * self.config.m1_multiplier)
         enc2_norm = enc2_raw * self.config.m2_multiplier
 
@@ -163,9 +145,9 @@ class MotorController:
 
     def get_absolute_positions(self) -> Tuple[int, int]:
         """
-        Get raw absolute encoder positions (M1 negated due to mounting)
+        Get raw absolute encoder positions.
+        M1 is negated to account for inverted mounting.
         """
-
         success, enc1, enc2 = self.read_encoders()
 
         if not success:
@@ -176,45 +158,39 @@ class MotorController:
     def set_motor(self, motor: int, direction: Direction, speed: int = None):
         """
         Set a single motor's speed and direction.
-        Handles the hardware-specific motor swapping logic internally.
+        Forward/Backward commands are swapped in hardware for both motors,
+        so the swap is handled transparently here.
         """
-
         if speed is None:
             speed = self.current_speed
 
-        speed = max(0, min(127, speed))  # Clamp to valid range
+        speed = max(0, min(127, speed))  # Clamp to valid RoboClaw range
 
-        # Logic for Motor 1 (Hardware swap handled here)
+        # Motor 1 — Forward/Backward are hardware-swapped
         if motor == 1:
             if direction == Direction.FORWARD:
-                self.rc.BackwardM1(self.config.address, speed)  # SWAPPED
+                self.rc.BackwardM1(self.config.address, speed)
             elif direction == Direction.BACKWARD:
-                self.rc.ForwardM1(self.config.address, speed)  # SWAPPED
+                self.rc.ForwardM1(self.config.address, speed)
             else:
                 self.rc.ForwardM1(self.config.address, 0)
 
-        # Logic for Motor 2 (Hardware swap handled here)
+        # Motor 2 — Forward/Backward are hardware-swapped
         elif motor == 2:
             if direction == Direction.FORWARD:
-                self.rc.BackwardM2(self.config.address, speed)  # SWAPPED
+                self.rc.BackwardM2(self.config.address, speed)
             elif direction == Direction.BACKWARD:
-                self.rc.ForwardM2(self.config.address, speed)  # SWAPPED
+                self.rc.ForwardM2(self.config.address, speed)
             else:
                 self.rc.ForwardM2(self.config.address, 0)
 
     def stop_all(self):
-        """
-        Emergency stop both motors.
-        """
-
+        """Emergency stop — set both motors to zero speed."""
         self.rc.ForwardM1(self.config.address, 0)
         self.rc.ForwardM2(self.config.address, 0)
 
     def adjust_speed(self, delta: int):
-        """
-        Adjust current speed by delta amount.
-        """
-
+        """Adjust current speed by delta, clamped to [min_speed, max_speed]."""
         self.current_speed = max(
             self.config.min_speed,
             min(self.config.max_speed, self.current_speed + delta)
@@ -222,13 +198,11 @@ class MotorController:
 
 
 # ==============================================================================
-# MOVEMENT CONTROLLER CLASS
+# MOVEMENT CONTROLLER
 # ==============================================================================
 
 class MovementController:
-    """
-    Handles high-level movement commands (Drive Distance, etc.).
-    """
+    """High-level movement commands using encoder-based distance tracking."""
 
     def __init__(self, motor_ctrl: MotorController):
         self.motor_ctrl = motor_ctrl
@@ -236,39 +210,39 @@ class MovementController:
 
     def drive_distance(self, m1_dir: Direction, m2_dir: Direction, fraction: float = 1.0) -> bool:
         """
-        Drive motors for a specified fraction of a rotation cycle.
+        Drive motors for a specified fraction of a full wheel rotation cycle.
         Args:
-            m1_dir: direction of first motor
-            m2_dir: direction of second motor
-            fraction: Fraction of full cycle (1.0 = full, 0.25 = quarter)
-        Returns: True if completed, False if aborted
+            m1_dir:   Direction for motor 1
+            m2_dir:   Direction for motor 2
+            fraction: Fraction of full cycle (1.0 = 360°, 0.25 = 90°)
+        Returns: True if completed, False if aborted by user (spacebar)
         """
-
         if self.motor_ctrl.current_speed <= 0:
             return False
 
-        # Get starting positions
+        # Record starting positions
         abs_pos1, abs_pos2 = self.motor_ctrl.get_absolute_positions()
 
-        # Calculate movement parameters
+        # Calculate effective movement direction per motor
         m1_forward = m1_dir.value * self.config.m1_multiplier
         m2_forward = m2_dir.value * self.config.m2_multiplier
 
-        # Calculate distance to travel (fraction of full cycle)
+        # Account for current position within the cycle to complete the
+        # remaining fraction exactly
         cycle_pos1, cycle_pos2 = self.motor_ctrl.get_cycle_positions(
             self.config.ticks_per_cycle * fraction
         )
         distance_to_travel = int(self.config.ticks_per_cycle * fraction)
 
-        # Calculate target positions (absolute)
+        # Calculate absolute target positions
         target1 = abs_pos1 + ((distance_to_travel - cycle_pos1) * m1_forward)
         target2 = abs_pos2 + ((distance_to_travel - cycle_pos2) * m2_forward)
 
-        # Start motors
+        # Start both motors
         self.motor_ctrl.set_motor(1, m1_dir)
         self.motor_ctrl.set_motor(2, m2_dir)
 
-        # Monitor progress
+        # Monitor until targets are reached (or aborted)
         try:
             return self._monitor_movement(target1, target2, m1_forward, m2_forward)
         finally:
@@ -277,20 +251,20 @@ class MovementController:
     def _monitor_movement(self, target1: int, target2: int,
                           dir1: int, dir2: int) -> bool:
         """
-        Monitor movement loop. Checks encoder values against targets.
+        Poll encoders in a loop until both motors reach their target positions.
+        Pressing spacebar aborts the movement.
         """
-
         while True:
-            # Check for abort key (space-bar)
+            # Check for abort (spacebar)
             key = get_key(timeout=self.config.poll_interval)
             if key == ' ':
                 print("\n⚠️  ABORTED")
                 return False
 
-            # Read current positions
+            # Read current encoder positions
             current1, current2 = self.motor_ctrl.get_absolute_positions()
 
-            # Check completion for each motor
+            # Check if each motor has reached its target
             m1_done = (dir1 == 0) or \
                       (dir1 > 0 and current1 >= target1) or \
                       (dir1 < 0 and current1 <= target1)
@@ -299,31 +273,29 @@ class MovementController:
                       (dir2 > 0 and current2 >= target2) or \
                       (dir2 < 0 and current2 <= target2)
 
-            # Stop individual motors as they complete
+            # Stop individual motors as they reach their targets
             if m1_done:
                 self.motor_ctrl.set_motor(1, Direction.STOP)
             if m2_done:
                 self.motor_ctrl.set_motor(2, Direction.STOP)
 
-            # Display progress
             display_progress(current1, target1, current2, target2)
 
-            # Check if both done
             if m1_done and m2_done:
                 print("\n✓ Target Reached")
                 return True
 
 
 # ==============================================================================
-# KEYBOARD INPUT HELPER
+# KEYBOARD INPUT
 # ==============================================================================
 
 def get_key(timeout: Optional[float] = None) -> Optional[str]:
     """
-    Get single keypress (including arrow keys and modifiers) from stdin.
-    Uses raw mode to avoid waiting for Enter.
+    Read a single keypress from stdin using raw terminal mode.
+    Handles multi-byte ANSI escape sequences (arrow keys, shift+arrow, etc.).
+    Returns None on timeout.
     """
-
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
 
@@ -336,17 +308,18 @@ def get_key(timeout: Optional[float] = None) -> Optional[str]:
 
         ch = sys.stdin.read(1)
 
-        # Handle escape sequences (arrow keys, etc.)
+        # Parse ANSI escape sequences: ESC [ <params> <letter>
         if ch == '\x1b':
             extra = sys.stdin.read(1)
             if extra == '[':
                 seq = sys.stdin.read(1)
                 if seq.isdigit():
+                    # Read extended modifier sequence (e.g., "1;2A" for Shift+Up)
                     modifier = seq
                     while True:
                         ready, _, _ = select.select([sys.stdin], [], [], 0.1)
                         if not ready:
-                            break  # No more data coming, use what we have
+                            break  # No more data, use what we have
                         next_char = sys.stdin.read(1)
                         modifier += next_char
                         if next_char.isalpha():
@@ -363,13 +336,11 @@ def get_key(timeout: Optional[float] = None) -> Optional[str]:
 
 
 # ==============================================================================
-# ROBOT INTERFACE CLASS
+# ROBOT INTERFACE
 # ==============================================================================
 
 class RobotInterface:
-    """
-    Main user interface for robot control.
-    """
+    """Top-level keyboard-driven robot control interface."""
 
     def __init__(self, config: RobotConfig):
         self.config = config
@@ -377,15 +348,15 @@ class RobotInterface:
         self.movement_ctrl = MovementController(self.motor_ctrl)
         self.running = True
 
-        # --- LENGTH TRACKING ---
+        # Odometry step tracking
         self.step = 0
-        self.STEP_SIZE = 0.256
+        self.STEP_SIZE = 0.256  # Meters per full wheel rotation
 
     def display_status(self):
         """
-        Display current robot status (Encoders). Can be overridden/monkey-patched.
+        Print current robot status (encoders, speed, distance).
+        Can be monkey-patched by main.py to add IMU/position data.
         """
-
         try:
             abs1, abs2 = self.motor_ctrl.get_absolute_positions()
             print("\n--- ROBOT STATUS ---")
@@ -399,49 +370,45 @@ class RobotInterface:
 
     def get_status_line(self):
         """
-        Generates the text for the idle loop. Can be overridden.
+        Generate the idle-loop status line text.
+        Can be monkey-patched by main.py for custom telemetry.
         """
-
         return (f"⚡ Speed: {self.motor_ctrl.current_speed} | "
                 f"Length: {self.step * self.STEP_SIZE:.1f} | "
                 f"Ready... ")
 
     def handle_command(self, key: str):
-        """
-        Process keyboard command.
-        """
-
-        # Mapping helpers
+        """Dispatch a keyboard command to the appropriate action."""
         m = self.movement_ctrl
         d = Direction
 
-        # Navigation commands - Full cycle (360°)
-        if key == '\x1b[A':
-            m.drive_distance(d.FORWARD, d.FORWARD)   # Up
-            self.step += 1  # Increment Step Counter
-        # elif key == '\x1b[B':
-        #     m.drive_distance(d.BACKWARD, d.BACKWARD) # Down
-        #     self.step = max(0, self.step - 1)  # Decrement Step Counter (no negative)
-        elif key == '\x1b[C':
-            m.drive_distance(d.STOP, d.FORWARD)      # Right
-        elif key == '\x1b[D':
-            m.drive_distance(d.FORWARD, d.STOP)      # Left
+        # --- Full rotation (360°) ---
+        if key == '\x1b[A':                                     # Up Arrow
+            m.drive_distance(d.FORWARD, d.FORWARD)
+            self.step += 1
+        # elif key == '\x1b[B':                                 # Down Arrow (disabled)
+        #     m.drive_distance(d.BACKWARD, d.BACKWARD)
+        #     self.step = max(0, self.step - 1)
+        elif key == '\x1b[C':                                   # Right Arrow
+            m.drive_distance(d.STOP, d.FORWARD)
+        elif key == '\x1b[D':                                   # Left Arrow
+            m.drive_distance(d.FORWARD, d.STOP)
 
-        # Navigation commands - Quarter cycle (90°) with Shift
-        elif key == '\x1b[1;2A':
-            m.drive_distance(d.FORWARD, d.FORWARD, 0.25)    # Shift + Up
-        elif key == '\x1b[1;2C':
-            m.drive_distance(d.STOP, d.FORWARD, 0.25)       # Shift + Right
-        elif key == '\x1b[1;2D':
-            m.drive_distance(d.FORWARD, d.STOP, 0.25)       # Shift + Left
+        # --- Quarter rotation (90°) with Shift ---
+        elif key == '\x1b[1;2A':                                # Shift+Up
+            m.drive_distance(d.FORWARD, d.FORWARD, 0.25)
+        elif key == '\x1b[1;2C':                                # Shift+Right
+            m.drive_distance(d.STOP, d.FORWARD, 0.25)
+        elif key == '\x1b[1;2D':                                # Shift+Left
+            m.drive_distance(d.FORWARD, d.STOP, 0.25)
 
-        # Speed control
+        # --- Speed control ---
         elif key in ['+', '=']:
             self.motor_ctrl.adjust_speed(self.config.speed_increment)
         elif key in ['-', '_']:
             self.motor_ctrl.adjust_speed(-self.config.speed_increment)
 
-        # Utility commands
+        # --- Utility commands ---
         elif key.lower() == 'h':
             display_help()
         elif key.lower() == 's':
@@ -453,15 +420,11 @@ class RobotInterface:
             self.running = False
 
     def run(self):
-        """
-        Main control loop.
-        """
-
+        """Main control loop — blocks until user presses 'q'."""
         display_help()
 
         try:
             while self.running:
-                # Use the new helper method instead of hardcoded text
                 print(f"\r{self.get_status_line()}", end="")
 
                 key = get_key()

@@ -1,8 +1,6 @@
 """
-imu_driver.py
--------------
-Low-level driver for the LSM6DSV16X IMU and coordinate transformation math.
-Uses I2C burst reads for atomic, high-speed data acquisition.
+imu_driver.py - Low-level I2C driver for the LSM6DSV16X IMU.
+Handles sensor initialization, burst reads, and body-to-global coordinate transformation.
 """
 
 import time
@@ -13,38 +11,35 @@ import smbus2
 from smbus2 import i2c_msg
 
 
-# ------------------------------------------------------------------
-#   CONSTANTS & CONFIGURATION
-# ------------------------------------------------------------------
+# --- I2C Configuration ---
 
-# I2C Parameters
-DEVICE_ADDRESS = 0x6B   # Default I2C address for LSM6DSV16X
-BUS_NUM = 1             # Raspberry Pi I2C bus number
+DEVICE_ADDRESS = 0x6B   # LSM6DSV16X default I2C address
+BUS_NUM = 1             # RPi I2C bus
 
-# Register Map Addresses
-REG_CTRL1_XL = 0x10     # Accelerometer Control Register
-REG_CTRL2_G = 0x11      # Gyroscope Control Register
-REG_CTRL3_C = 0x12      # Control Register 3 (includes Reset, BDU)
-REG_STATUS = 0x1E       # Status Register (checks if data is ready)
-REG_OUTX_L_G = 0x22     # Gyroscope Output Data (Low Byte X)
+# --- Register Map ---
 
-# --- SENSOR CONFIGURATION (Safe Mode) ---
-CFG_ACCEL_2G = 0x04     # ±2g, 120Hz
-CFG_GYRO_125DPS = 0x04  # ±125 dps, 120Hz
+REG_CTRL1_XL = 0x10     # Accelerometer control
+REG_CTRL2_G = 0x11      # Gyroscope control
+REG_CTRL3_C = 0x12      # Control register 3 (reset, BDU)
+REG_STATUS = 0x1E        # Data-ready status
+REG_OUTX_L_G = 0x22     # Gyroscope output start (X low byte)
 
-# --- SENSITIVITY FACTORS ---
-# Accelerometer: ±2g Range -> 0.061 mg/LSB
+# --- Sensor Modes ---
+
+CFG_ACCEL_2G = 0x04      # ±2g, 120Hz
+CFG_GYRO_125DPS = 0x04   # ±125 dps, 120Hz
+
+# --- Sensitivity Factors (from datasheet) ---
+
+# ±2g  -> 0.061 mg/LSB -> convert to m/s²
 ACCEL_SENSITIVITY = 0.061 / 1000.0 * 9.80665
 
-# Gyroscope: ±125 dps Range -> 4.375 mdps/LSB -> 0.004375 deg/s per LSB
+# ±125 dps -> 4.375 mdps/LSB -> 0.004375 deg/s per LSB
 GYRO_SENSITIVITY = 0.004375
 
 
 class LSM6DSV16X:
-    """
-    Driver class for the LSM6DSV16X IMU.
-    Handles I2C connection, initialization, and raw data conversion.
-    """
+    """Driver for the LSM6DSV16X IMU over I2C."""
 
     def __init__(self, bus_num=BUS_NUM, address=DEVICE_ADDRESS):
         self.bus_num = bus_num
@@ -52,7 +47,7 @@ class LSM6DSV16X:
         self.bus = None
 
     def connect(self):
-        """Establishes connection to the I2C bus."""
+        """Open the I2C bus."""
         try:
             self.bus = smbus2.SMBus(self.bus_num)
             print(f"--- I2C Connected on Bus {self.bus_num} ---")
@@ -61,23 +56,21 @@ class LSM6DSV16X:
             sys.exit(1)
 
     def initialize(self):
-        """
-        Sets up the sensor registers.
-        """
+        """Reset the sensor and configure accelerometer/gyroscope registers."""
         if self.bus is None:
             self.connect()
 
         try:
             print("Initializing Sensor...", end="")
-            # 1. Software Reset
+            # Software reset
             self.bus.write_byte_data(self.address, REG_CTRL3_C, 0x01)
             time.sleep(0.5)
 
-            # 2. Configure Accelerometer & Gyroscope
+            # Configure accelerometer and gyroscope
             self.bus.write_byte_data(self.address, REG_CTRL1_XL, CFG_ACCEL_2G)
             self.bus.write_byte_data(self.address, REG_CTRL2_G, CFG_GYRO_125DPS)
 
-            # 3. Enable BDU (Block Data Update)
+            # Enable BDU (Block Data Update) to prevent partial reads
             self.bus.write_byte_data(self.address, REG_CTRL3_C, 0x44)
 
             time.sleep(0.2)
@@ -90,25 +83,22 @@ class LSM6DSV16X:
 
     def get_data(self):
         """
-        Polls the status register. If data is ready, performs an atomic I2C
-        burst read of all 6 axes to guarantee measurement synchronization.
+        Read all 6 axes via atomic burst read when new data is available.
+        Returns dict with ax/ay/az (m/s²) and gx/gy/gz (rad/s), or None.
         """
         try:
             status = self.bus.read_byte_data(self.address, REG_STATUS)
 
-            # Check if BOTH Accel and Gyro have new data (Bitmask 0x03)
+            # Both accel and gyro ready (bits 0 and 1)
             if status & 0x03:
-                # --- Atomic Burst Read ---
-                # Read 12 contiguous bytes starting from Gyro X Low (0x22)
+                # Burst read: 12 contiguous bytes starting at gyro X low (0x22)
                 write = i2c_msg.write(self.address, [REG_OUTX_L_G])
                 read = i2c_msg.read(self.address, 12)
                 self.bus.i2c_rdwr(write, read)
 
-                # Unpack 6 signed 16-bit little-endian integers
-                # Format '<6h': '<' = little-endian, '6h' = 6 standard shorts (16-bit)
+                # 6 signed 16-bit little-endian integers: gx, gy, gz, ax, ay, az
                 gx, gy, gz, ax, ay, az = struct.unpack('<6h', bytes(read))
 
-                # --- Convert to Physical Units ---
                 data = {
                     'ax': ax * ACCEL_SENSITIVITY,
                     'ay': ay * ACCEL_SENSITIVITY,
@@ -126,7 +116,7 @@ class LSM6DSV16X:
             return None
 
     def close(self):
-        """Closes the I2C bus connection cleanly."""
+        """Close the I2C bus."""
         if self.bus:
             self.bus.close()
             print("\nI2C connection closed.")
@@ -134,30 +124,25 @@ class LSM6DSV16X:
 
 def imu_to_global_coordinates(angles_rad):
     """
-    Computes the rotation matrix to convert from the IMU (Body) frame
-    to the Global (Inertial) frame using Euler angles in radians.
+    Build the rotation matrix (body frame -> global frame) from Euler angles.
+    Applies ZYX rotation order: R = Rz(yaw) * Ry(pitch) * Rx(roll).
     """
     roll, pitch, yaw = angles_rad[0], angles_rad[1], angles_rad[2]
 
-    # Pre-calculate trigonometric values
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
     cy, sy = np.cos(yaw), np.sin(yaw)
 
-    # Rotation matrix around the Z-axis (Yaw)
     Rz = np.array([[cy, -sy, 0],
                    [sy, cy, 0],
                    [0, 0, 1]])
 
-    # Rotation matrix around the Y-axis (Pitch)
     Ry = np.array([[cp, 0, sp],
                    [0, 1, 0],
                    [-sp, 0, cp]])
 
-    # Rotation matrix around the X-axis (Roll)
     Rx = np.array([[1, 0, 0],
                    [0, cr, -sr],
                    [0, sr, cr]])
 
-    # Combine rotations: R = Rz * Ry * Rx
     return Rz @ Ry @ Rx

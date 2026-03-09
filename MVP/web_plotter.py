@@ -1,9 +1,6 @@
 """
-web_plotter.py
---------------
-Headless Matplotlib Plotter served via Flask.
-Uses Object-Oriented Matplotlib and Smart Caching to ensure 
-rendering only happens AFTER a movement finishes.
+web_plotter.py - Real-time odometry plot served as PNG via Flask.
+Uses cached rendering to avoid re-drawing when the robot hasn't moved.
 """
 
 import io
@@ -24,17 +21,16 @@ class WebPlotter:
         self.port = port
         self.app = Flask(__name__)
 
-        # Data Storage
+        # Path history and current position
         self.lock = threading.Lock()
         self.x_history = [0.0]
         self.y_history = [0.0]
         self.current_x = 0.0
         self.current_y = 0.0
 
-        # --- NEW: Smart Caching Variables ---
+        # Render cache: only re-draw when data changes
         self.needs_render = True
         self.cached_image = None
-        # ------------------------------------
 
         self.add_routes()
 
@@ -45,8 +41,6 @@ class WebPlotter:
     def add_routes(self):
         @self.app.route('/')
         def index():
-            # You can safely put this back to 500ms now if you want it to feel 
-            # more responsive, because redundant requests cost zero CPU!
             html_content = """
             <html>
                 <head><title>Robot Path</title></head>
@@ -57,7 +51,7 @@ class WebPlotter:
                         setInterval(function() {
                             var img = document.getElementById('plot');
                             img.src = '/plot.png?rand=' + Math.random();
-                        }, 1000); 
+                        }, 1000);
                     </script>
                 </body>
             </html>
@@ -73,35 +67,23 @@ class WebPlotter:
             return response
 
     def update(self, x, y):
-        """
-        Stores data and trips the flag so the next web request renders the new path.
-        This is ONLY called by main.py after the motors stop moving.
-        """
+        """Store new position and flag for re-render on next web request."""
         with self.lock:
             self.x_history.append(x)
             self.y_history.append(y)
             self.current_x = x
             self.current_y = y
-            
-            # --- NEW: Tell the server the data changed ---
             self.needs_render = True
 
     def generate_image(self):
-        """
-        Draws the plot. Only runs Matplotlib if the robot actually moved.
-        """
-        # --- NEW: Check the Cache first! ---
+        """Render the plot PNG. Returns cached image if robot hasn't moved."""
         with self.lock:
             if not self.needs_render and self.cached_image is not None:
-                # The robot hasn't moved. Instantly return the old picture.
-                # This uses almost ZERO CPU.
                 output = io.BytesIO(self.cached_image)
                 return send_file(output, mimetype='image/png')
-        # -----------------------------------
 
-        # If we reach here, it means the robot moved. Do the heavy rendering.
         fig = Figure(figsize=(6, 6))
-        FigureCanvasAgg(fig) 
+        FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
 
         with self.lock:
@@ -109,7 +91,6 @@ class WebPlotter:
             ys = list(self.y_history)
             cx, cy = self.current_x, self.current_y
 
-        # Plot Config
         ax.set_title("Robot Path (Real-Time)")
         ax.set_xlabel("Lateral (Y) [m]")
         ax.set_ylabel("Forward (X) [m]")
@@ -118,12 +99,12 @@ class WebPlotter:
         ax.yaxis.set_major_locator(ticker.MultipleLocator(0.5))
         ax.set_aspect('equal')
 
-        # Draw Path and Head
+        # Plot path and current position marker
         ax.plot(ys, xs, 'bo-', markersize=4, label='Path')
         ax.plot(cy, cx, 'rx', markersize=8, markeredgewidth=2, label='Robot')
         ax.legend(loc='upper left')
 
-        # Dynamic Zoom
+        # Auto-zoom with margin
         margin = 1.0
         if len(xs) > 1:
             ax.set_xlim(min(ys) - margin, max(ys) + margin)
@@ -132,12 +113,10 @@ class WebPlotter:
             ax.set_xlim(-margin, margin)
             ax.set_ylim(-margin, margin)
 
-        # Save to buffer
         output = io.BytesIO()
         fig.savefig(output, format='png')
         output.seek(0)
-        
-        # --- NEW: Save to cache and reset flag ---
+
         with self.lock:
             self.cached_image = output.getvalue()
             self.needs_render = False

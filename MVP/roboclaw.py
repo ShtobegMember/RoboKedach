@@ -1,3 +1,9 @@
+"""
+roboclaw.py - Serial protocol driver for the RoboClaw motor controller.
+Third-party library — provides command/response wrappers over the RoboClaw
+packet serial protocol with CRC16 checksums and automatic retries.
+"""
+
 import random
 import serial
 import struct
@@ -5,9 +11,7 @@ import time
 
 
 class Roboclaw:
-	"""
-	Roboclaw Interface Class
-	"""
+	"""RoboClaw serial interface. Handles CRC, framing, and retry logic."""
 	
 	def __init__(self, comport, rate, timeout=0.01, retries=3):
 		self.comport = comport
