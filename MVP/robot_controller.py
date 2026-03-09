@@ -344,6 +344,9 @@ def get_key(timeout: Optional[float] = None) -> Optional[str]:
                 if seq.isdigit():
                     modifier = seq
                     while True:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if not ready:
+                            break  # No more data coming, use what we have
                         next_char = sys.stdin.read(1)
                         modifier += next_char
                         if next_char.isalpha():
@@ -415,7 +418,10 @@ class RobotInterface:
         # Navigation commands - Full cycle (360°)
         if key == '\x1b[A':
             m.drive_distance(d.FORWARD, d.FORWARD)   # Up
-            self.step += 1  # --- Increment Step Counter ---
+            self.step += 1  # Increment Step Counter
+        # elif key == '\x1b[B':
+        #     m.drive_distance(d.BACKWARD, d.BACKWARD) # Down
+        #     self.step = max(0, self.step - 1)  # Decrement Step Counter (no negative)
         elif key == '\x1b[C':
             m.drive_distance(d.STOP, d.FORWARD)      # Right
         elif key == '\x1b[D':

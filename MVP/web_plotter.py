@@ -77,7 +77,6 @@ class WebPlotter:
         Stores data and trips the flag so the next web request renders the new path.
         This is ONLY called by main.py after the motors stop moving.
         """
-
         with self.lock:
             self.x_history.append(x)
             self.y_history.append(y)
@@ -91,7 +90,6 @@ class WebPlotter:
         """
         Draws the plot. Only runs Matplotlib if the robot actually moved.
         """
-        
         # --- NEW: Check the Cache first! ---
         with self.lock:
             if not self.needs_render and self.cached_image is not None:

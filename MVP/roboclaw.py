@@ -594,7 +594,7 @@ class Roboclaw:
 	def _write4S444S441(self, address, cmd, val1, val2, val3, val4, val5, val6, val7):
 		trys = self._trystimeout
 		while trys:
-			self._sendcommand(self, address, cmd)
+			self._sendcommand(address, cmd)
 			self._writelong(val1)
 			self._writeslong(val2)
 			self._writelong(val3)
@@ -946,9 +946,9 @@ class Roboclaw:
 			val1 = self._readbyte()
 			if val1[0]:
 				val2 = self._readbyte()
-				if val1[0]:
+				if val2[0]:
 					val3 = self._readbyte()
-					if val1[0]:
+					if val3[0]:
 						crc = self._readchecksumword()
 						if crc[0]:
 							if self._crc&0xFFFF!=crc[1]&0xFFFF:
@@ -1040,7 +1040,7 @@ class Roboclaw:
 			self._port.flushInput()
 			self._sendcommand(address,self.Cmd.READEEPROM)
 			self.crc_update(ee_address)
-			self._port.write(chr(ee_address))
+			self._port.write(ee_address.to_bytes(1, 'big'))
 			val1 = self._readword()
 			if val1[0]:
 				crc = self._readchecksumword()

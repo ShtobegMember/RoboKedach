@@ -80,8 +80,15 @@ def main():
             4. Update X, Y based on STEP_SIZE.
             """
 
-            # Check for FORWARD command (Up Arrow)
-            if key == '\x1b[A':
+            # Forward commands that need odometry tracking
+            forward_keys = {
+                '\x1b[A': 1.0,       # Up Arrow = full step
+                '\x1b[1;2A': 0.25,   # Shift+Up = quarter step
+            }
+
+            if key in forward_keys:
+                fraction = forward_keys[key]
+
                 # 1. Save initial Yaw (Index 2 is Yaw)
                 _, _, yaw_initial = imu_thread.get_angles()
 
@@ -99,7 +106,7 @@ def main():
                 # 5. Update X, Y
                 # Convert degrees to radians for math functions
                 yaw_rad = math.radians(yaw_avg)
-                dist = interface.STEP_SIZE
+                dist = interface.STEP_SIZE * fraction
 
                 # Standard 2D Kinematics:
                 # New_X = Old_X + (dist * cos(theta))

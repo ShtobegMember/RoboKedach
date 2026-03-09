@@ -78,7 +78,7 @@ class IMUThread(threading.Thread):
         """
 
         print("IMU Thread Started...")
-        last_time = time.time()
+        last_time = None
 
         while self.running:
             try:
@@ -88,6 +88,13 @@ class IMUThread(threading.Thread):
                 if sensor_data:
                     # Calculate dt only when we actually have a sample
                     curr_time = time.time()
+
+                    # First valid sample: just establish baseline, skip integration
+                    if last_time is None:
+                        last_time = curr_time
+                        time.sleep(0.005)
+                        continue
+
                     dt = curr_time - last_time
                     last_time = curr_time
 
@@ -116,7 +123,7 @@ class IMUThread(threading.Thread):
 
                 # Short sleep to prevent CPU hogging
                 # ODR is 120Hz (~8.3ms), so 5ms sleep is safe
-                time.sleep(0.005)
+                time.sleep(0.008)
 
             except Exception as e:
                 print(f"IMU Thread Error: {e}")
@@ -131,4 +138,4 @@ class IMUThread(threading.Thread):
         """
 
         self.running = False
-        self.join()
+        self.join(timeout=2)  # Wait up to 2 seconds for the thread to finish
