@@ -19,7 +19,7 @@ This project is an industrial-grade robotics platform currently transitioning fr
 * **Pi Power**: 5V (3A+) Buck Converter stepping down from 12V.
 
 ### Sensors & Actuators
-* **Motors**: Pololu 131 12V motors with encoders (8400 ticks per cycle). (Mounted inverted; software requires `m1_multiplier = -1` and `m2_multiplier = -1`).
+* **Motors**: Pololu 131 12V motors with encoders (8400 ticks per cycle).
 * **Locomotion (Whegs)**: The robot utilizes "whegs" (half-circle legs) instead of standard continuous-rotation wheels. This mechanical design requires strict constant-phase synchronization between the left and right motors to maintain a stable gait. Consequently, motor movement logic should use precise, encoder-based positional tracking (driving specific fractions of a rotation cycle) rather than simple open-loop velocity commands.
 * **Motor Controller**: RoboClaw. Connected via Serial `ttyAMA0`, Baud Rate: `38400`, Address: `0x80`.
 * **IMU**: LSM6DSV16X. Connected via I2C Bus `1`, Address `0x6B`. Configured for atomic burst reads at 120Hz, ±2g accelerometer, and ±125dps gyroscope.
@@ -61,13 +61,12 @@ When modifying or generating code for this project, the coding agent MUST adhere
 
 ---
 
-## 5. Folder & Files Context & Guide
+## 5. Folders Context & Guide
 
 ### Non-Product Folders
 * The folders `IMU_BMI270` and `IMU_LSM6DSV16X` are independent of each other and are used to test the IMU drivers only.
-* The folder `multiprocessing` is used to test the multiprocessing capabilities of the Pi only.
 * The folder `drafts` contains some old codes and test, ignore it.
 
 ### Product Folders
 * The folder `MVP` contains the finished code for the Minimum-Viable-Product of the project. It runs by itself on the previous version of the robot, and is the base for the next iteration and final product.
-* The folders `PC-FINAL` and `RPI-FINAL` contain the in-the-works code for the PC and Raspberry-Pi sides in the final product. It is not done and requires more integration of the MVP code.
+* The folders `PC` and `RPI` inside `GUI` contain the in-the-works code for the PC and Raspberry-Pi sides in the final product. It is not done and requires more integration of the MVP code.

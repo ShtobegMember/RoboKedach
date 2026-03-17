@@ -1,5 +1,5 @@
 """
-rpi_main2.py - Raspberry Pi main process manager.
+rpi_main.py - Raspberry Pi main process manager.
 Launches camera server, IMU streamer, and motor engine as separate processes.
 Monitors health and auto-restarts on failure.
 """
