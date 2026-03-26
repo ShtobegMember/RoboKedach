@@ -1,7 +1,7 @@
 """
 pc_main.py - Base Station HUD Dashboard.
 Displays live camera feed as background, IMU telemetry & voltage/current overlay,
-and captures arrow keys for remote motor control.
+and captures arrow keys for continuous remote motor control.
 """
 
 import sys
@@ -202,6 +202,7 @@ class MotorCommandWorker(QThread):
 
     status_update = pyqtSignal(str)
     speed_update = pyqtSignal(int)
+    motor_ready = pyqtSignal()
 
     def __init__(self, host, port):
         super().__init__()
@@ -241,6 +242,7 @@ class MotorCommandWorker(QThread):
                                 self.status_update.emit("Motor: Moving...")
                             elif msg == "READY":
                                 self.status_update.emit("Motor: Ready")
+                                self.motor_ready.emit()
                             elif msg.startswith("ERROR:"):
                                 self.status_update.emit(f"Motor: {msg}")
                     except socket.timeout:
@@ -436,6 +438,10 @@ class HUDWindow(QMainWindow):
         self.motor_speed = 0
         self.vm_status = "VM: Disconnected"
 
+        # Continuous movement state
+        self._held_move_cmd = None   # Command string for the currently held key
+        self._held_key_code = None   # Qt key code of the held movement key
+
         # Camera background
         self.camera_label = QLabel(self)
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -462,6 +468,7 @@ class HUDWindow(QMainWindow):
         self.motor_worker = MotorCommandWorker(RPI_IP, MOTOR_PORT)
         self.motor_worker.status_update.connect(self._on_motor_status)
         self.motor_worker.speed_update.connect(self._on_motor_speed)
+        self.motor_worker.motor_ready.connect(self._on_motor_ready)
         self.motor_worker.start()
 
         # VM (voltage monitor) server worker
@@ -478,7 +485,7 @@ class HUDWindow(QMainWindow):
     # --- Key Input ---
     def keyPressEvent(self, event):
         """Capture arrow keys and send motor commands to the RPi."""
-        
+
         if event.isAutoRepeat():
             return
 
@@ -486,27 +493,49 @@ class HUDWindow(QMainWindow):
         key = event.key()
 
         cmd = None
+        is_movement = False
+
         if key == Qt.Key.Key_Up:
             cmd = "FWD90" if shift else "FWD"
+            is_movement = True
         # elif key == Qt.Key.Key_Down:
         #     cmd = "BWD90" if shift else "BWD"
+        #     is_movement = True
         elif key == Qt.Key.Key_Left:
             cmd = "LEFT90" if shift else "LEFT"
+            is_movement = True
         elif key == Qt.Key.Key_Right:
             cmd = "RIGHT90" if shift else "RIGHT"
+            is_movement = True
         elif key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             cmd = "SPEED_UP"
         elif key == Qt.Key.Key_Minus:
             cmd = "SPEED_DOWN"
         elif key == Qt.Key.Key_Space:
             cmd = "ABORT"
+            # Abort cancels continuous movement
+            self._held_move_cmd = None
+            self._held_key_code = None
         elif key == Qt.Key.Key_R:
             cmd = "RESET_ENC"
 
         if cmd:
+            if is_movement:
+                self._held_move_cmd = cmd
+                self._held_key_code = key
             self.motor_worker.send_command(cmd)
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """Clear held movement state when the movement key is released."""
+
+        if event.isAutoRepeat():
+            return
+
+        if event.key() == self._held_key_code:
+            self._held_move_cmd = None
+            self._held_key_code = None
 
     # --- Slots ---
     def _on_frame(self, image):
@@ -537,6 +566,12 @@ class HUDWindow(QMainWindow):
     def _on_motor_speed(self, speed):
         self.motor_speed = speed
         self.overlay.update()
+
+    def _on_motor_ready(self):
+        """When RPi finishes a rotation and is ready, re-send if key still held."""
+
+        if self._held_move_cmd:
+            self.motor_worker.send_command(self._held_move_cmd)
 
     def _on_vm_data(self, voltage, current):
         self.vm_data = {'voltage': voltage, 'current': current}
