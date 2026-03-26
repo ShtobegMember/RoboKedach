@@ -1,6 +1,6 @@
 """
-pc_gui_main.py - Base Station HUD Dashboard.
-Displays live camera feed as background, IMU telemetry overlay,
+pc_main.py - Base Station HUD Dashboard.
+Displays live camera feed as background, IMU telemetry & voltage/current overlay,
 and captures arrow keys for remote motor control.
 """
 
@@ -11,21 +11,24 @@ import time
 import math
 import threading
 import urllib.request
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QFont, QColor, QPen
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel
 
 
 # ========================== Configuration ==========================
-RPI_IP = "172.17.94.198"
+RPI_IP = "192.168.1.2"
 CAMERA_URL = f"http://{RPI_IP}:5000/"
+
 IMU_PORT = 65432
 MOTOR_PORT = 65433
+VM_PORT = 65434
 
 
 # ========================== MJPEG Stream Worker ==========================
 class MJPEGStreamWorker(QThread):
     """Fetches MJPEG frames from the RPi camera HTTP server and emits QImages."""
+
     frame_received = pyqtSignal(QImage)
     status_update = pyqtSignal(str)
 
@@ -74,6 +77,7 @@ class MJPEGStreamWorker(QThread):
 # ========================== IMU Server Worker ==========================
 class IMUServerWorker(QThread):
     """TCP server that receives IMU data packets from the RPi."""
+
     data_received = pyqtSignal(float, float, float, float, float, float)
     status_update = pyqtSignal(str)
 
@@ -132,9 +136,70 @@ class IMUServerWorker(QThread):
         self.quit()
 
 
+# ========================== VM Server Worker ==========================
+class VMServerWorker(QThread):
+    """TCP server that receives INA226 voltage/current from the RPi."""
+
+    data_received = pyqtSignal(float, float)   # voltage, current
+    status_update = pyqtSignal(str)
+
+    def __init__(self, host="0.0.0.0", port=VM_PORT):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.is_running = True
+
+    def run(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            server.bind((self.host, self.port))
+            server.listen()
+            server.settimeout(1.0)
+            self.status_update.emit(f"VM: Listening on port {self.port}")
+
+            while self.is_running:
+                try:
+                    conn, addr = server.accept()
+                    self._handle_client(conn, addr)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.is_running:
+                        self.status_update.emit(f"VM server error: {e}")
+        finally:
+            server.close()
+
+    def _handle_client(self, conn, addr):
+        self.status_update.emit(f"VM: RPi connected from {addr[0]}")
+
+        try:
+            while self.is_running:
+                data = conn.recv(8)  # 2 floats = 8 bytes
+                if not data:
+                    break
+                if len(data) == 8:
+                    voltage, current = struct.unpack('<2f', data)
+                    self.data_received.emit(voltage, current)
+
+        except ConnectionResetError:
+            self.status_update.emit("VM: Connection lost")
+        except Exception as e:
+            self.status_update.emit(f"VM error: {e}")
+        finally:
+            conn.close()
+            self.status_update.emit("VM: Waiting for reconnection...")
+
+    def stop(self):
+        self.is_running = False
+        self.quit()
+
+
 # ========================== Motor Command Worker ==========================
 class MotorCommandWorker(QThread):
     """TCP client that sends motor commands to and receives status from the RPi."""
+
     status_update = pyqtSignal(str)
     speed_update = pyqtSignal(int)
 
@@ -193,6 +258,7 @@ class MotorCommandWorker(QThread):
 
     def send_command(self, cmd):
         """Thread-safe command send. Called from the GUI thread."""
+
         with self._lock:
             if self._sock:
                 try:
@@ -213,7 +279,7 @@ class MotorCommandWorker(QThread):
 
 # ========================== HUD Overlay ==========================
 class HUDOverlay(QLabel):
-    """Transparent widget that paints IMU telemetry and motor status over the camera feed."""
+    """Transparent widget that paints IMU telemetry, motor status, and power data."""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -233,6 +299,7 @@ class HUDOverlay(QLabel):
         panel_bg = QColor(0, 0, 0, 140)
         green = QColor(0, 255, 0, 220)
         white = QColor(255, 255, 255, 240)
+        yellow = QColor(255, 220, 0, 220)
         border = QPen(green, 1)
 
         title_font = QFont("Consolas", 11, QFont.Weight.Bold)
@@ -303,6 +370,37 @@ class HUDOverlay(QLabel):
 
             y += 25
 
+        # --- Power Monitor Panel (below accelerometer) ---
+        pm_y = 150
+        p.setBrush(panel_bg)
+        p.setPen(border)
+        p.drawRoundedRect(10, pm_y, 220, 80, 8, 8)
+
+        p.setFont(title_font)
+        p.setPen(yellow)
+        p.drawText(22, pm_y + 24, "POWER MONITOR")
+
+        p.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
+        vm = self.hud.vm_data
+        p.setPen(white)
+        p.drawText(28, pm_y + 50, f"{vm['voltage']:6.2f} V")
+        p.drawText(28, pm_y + 70, f"{vm['current']:6.3f} A")
+
+        # Voltage color indicator
+        v = vm['voltage']
+        if v > 0:
+            if v >= 11.1:
+                v_color = green         # Healthy (3.7V+ per cell)
+            elif v >= 10.2:
+                v_color = yellow        # Low warning (3.4V per cell)
+            else:
+                v_color = QColor(255, 50, 50, 220)  # Critical (<3.4V per cell)
+
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(v_color)
+            p.drawRect(190, pm_y + 38, 12, 12)
+            p.setBrush(panel_bg)
+
         # --- Status Bar (bottom) ---
         p.setBrush(QColor(0, 0, 0, 160))
         p.setPen(border)
@@ -312,14 +410,15 @@ class HUDOverlay(QLabel):
         p.setPen(green)
         p.drawText(20, h - 20,
                    f"CAM: {self.hud.camera_status}  |  {self.hud.imu_status}"
-                   f"  |  {self.hud.motor_status}  SPD: {self.hud.motor_speed}/127")
+                   f"  |  {self.hud.motor_status}  SPD: {self.hud.motor_speed}/127"
+                   f"  |  {self.hud.vm_status}")
 
         p.end()
 
 
 # ========================== Main HUD Window ==========================
 class HUDWindow(QMainWindow):
-    """Main window — camera feed background with IMU + motor HUD overlay."""
+    """Main window — camera feed background with IMU + motor + power HUD overlay."""
 
     def __init__(self):
         super().__init__()
@@ -330,10 +429,12 @@ class HUDWindow(QMainWindow):
 
         # State
         self.imu_data = {'ax': 0, 'ay': 0, 'az': 0, 'gx': 0, 'gy': 0, 'gz': 0}
+        self.vm_data = {'voltage': 0.0, 'current': 0.0}
         self.camera_status = "Disconnected"
         self.imu_status = "Disconnected"
         self.motor_status = "Disconnected"
         self.motor_speed = 0
+        self.vm_status = "VM: Disconnected"
 
         # Camera background
         self.camera_label = QLabel(self)
@@ -363,9 +464,21 @@ class HUDWindow(QMainWindow):
         self.motor_worker.speed_update.connect(self._on_motor_speed)
         self.motor_worker.start()
 
+        # VM (voltage monitor) server worker
+        self.vm_worker = VMServerWorker()
+        self.vm_worker.data_received.connect(self._on_vm_data)
+        self.vm_worker.status_update.connect(self._on_vm_status)
+        self.vm_worker.start()
+
+        # Periodic repaint for VM panel (ensures updates even when IMU/camera are idle)
+        self.vm_timer = QTimer(self)
+        self.vm_timer.timeout.connect(self.overlay.update)
+        self.vm_timer.start(500)
+
     # --- Key Input ---
     def keyPressEvent(self, event):
         """Capture arrow keys and send motor commands to the RPi."""
+        
         if event.isAutoRepeat():
             return
 
@@ -375,8 +488,8 @@ class HUDWindow(QMainWindow):
         cmd = None
         if key == Qt.Key.Key_Up:
             cmd = "FWD90" if shift else "FWD"
-        elif key == Qt.Key.Key_Down:
-            cmd = "BWD90" if shift else "BWD"
+        # elif key == Qt.Key.Key_Down:
+        #     cmd = "BWD90" if shift else "BWD"
         elif key == Qt.Key.Key_Left:
             cmd = "LEFT90" if shift else "LEFT"
         elif key == Qt.Key.Key_Right:
@@ -425,18 +538,29 @@ class HUDWindow(QMainWindow):
         self.motor_speed = speed
         self.overlay.update()
 
+    def _on_vm_data(self, voltage, current):
+        self.vm_data = {'voltage': voltage, 'current': current}
+        self.overlay.update()
+
+    def _on_vm_status(self, msg):
+        self.vm_status = msg
+        self.overlay.update()
+
     # --- Events ---
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.overlay.setGeometry(0, 0, self.width(), self.height())
 
     def closeEvent(self, event):
+        self.vm_timer.stop()
         self.cam_worker.stop()
         self.imu_worker.stop()
         self.motor_worker.stop()
+        self.vm_worker.stop()
         self.cam_worker.wait(3000)
         self.imu_worker.wait(3000)
         self.motor_worker.wait(3000)
+        self.vm_worker.wait(3000)
         event.accept()
 
 

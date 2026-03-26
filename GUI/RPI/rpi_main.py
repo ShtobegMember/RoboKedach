@@ -1,6 +1,6 @@
 """
 rpi_main.py - Raspberry Pi main process manager.
-Launches camera server, IMU streamer, and motor engine as separate processes.
+Launches camera server, IMU & voltage/current streamer, and motor engine as separate processes.
 Monitors health and auto-restarts on failure.
 """
 
@@ -12,6 +12,7 @@ import struct
 import select
 import time
 import sys
+import smbus2
 
 from camera_server import run_server
 from imu_driver import LSM6DSV16X
@@ -20,28 +21,112 @@ from robot_controller import RobotConfig, MotorController, MovementController, D
 
 
 # ========================== Configuration ==========================
-PC_IP = "172.17.94.224"
+PC_IP = "192.168.1.1"
+
 IMU_PORT = 65432
 MOTOR_PORT = 65433
+VM_PORT = 65434
+
+# INA226 (Voltage Monitor) on I2C bus 3
+INA226_BUS        = 3
+INA226_ADDR       = 0x40
+INA226_SHUNT_OHMS = 0.01   # R010 = 10 mOhm
+INA226_REG_CONFIG = 0x00
+INA226_REG_BUS_V  = 0x02
+INA226_REG_CURRENT = 0x04
+INA226_REG_CAL    = 0x05
+INA226_BUS_V_LSB  = 1.25e-3   # 1.25 mV/bit
+INA226_CURRENT_LSB = 0.00025  # 0.25 mA/bit
+
+
+# ========================== INA226 Helpers ==========================
+def ina226_read_signed(bus, reg):
+    """Atomic 16-bit signed read from INA226."""
+
+    data = bus.read_i2c_block_data(INA226_ADDR, reg, 2)
+    return struct.unpack(">h", bytes(data))[0]
+
+
+def ina226_write(bus, reg, value):
+    """Write 16-bit big-endian value to INA226 register."""
+
+    data = struct.pack(">H", value & 0xFFFF)
+    bus.write_i2c_block_data(INA226_ADDR, reg, list(data))
+
+
+def ina226_init(bus):
+    """Configure INA226: 16-sample averaging, 1.1ms conversion, continuous mode."""
+
+    config = (0b010 << 12) | (0b100 << 9) | (0b100 << 6) | 0b111
+    ina226_write(bus, INA226_REG_CONFIG, config)
+    cal = int(0.00512 / (INA226_CURRENT_LSB * INA226_SHUNT_OHMS))
+    ina226_write(bus, INA226_REG_CAL, cal)
+
+
+# ========================== VM Streamer Thread ==========================
+def vm_streamer(server_ip, port):
+    """Stream INA226 voltage/current to the PC over TCP. Runs as a daemon thread."""
+
+    try:
+        bus = smbus2.SMBus(INA226_BUS)
+        ina226_init(bus)
+        print("VM: INA226 initialized on I2C bus 3.")
+    except Exception as e:
+        print(f"VM: Failed to init INA226: {e}. Thread exiting.")
+        return
+
+    while True:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                print(f"VM: Connecting to PC at {server_ip}:{port}...")
+                s.connect((server_ip, port))
+                print("VM: Connected. Streaming power data.")
+
+                while True:
+                    try:
+                        raw_v = ina226_read_signed(bus, INA226_REG_BUS_V)
+                        voltage = raw_v * INA226_BUS_V_LSB
+                        raw_i = ina226_read_signed(bus, INA226_REG_CURRENT)
+                        current = raw_i * INA226_CURRENT_LSB
+                        s.sendall(struct.pack('<2f', voltage, current))
+                    except OSError as e:
+                        print(f"VM: I2C read error: {e}")
+                    time.sleep(0.5)
+
+        except ConnectionRefusedError:
+            print("VM: PC not ready. Retrying in 3s...")
+            time.sleep(3)
+        except (ConnectionResetError, BrokenPipeError):
+            print("VM: Connection lost. Reconnecting in 2s...")
+            time.sleep(2)
+        except Exception as e:
+            print(f"VM: Error: {e}. Retrying in 3s...")
+            time.sleep(3)
 
 
 # ========================== Camera Process ==========================
 def camera_process():
     """Run the MJPEG camera server (Flask on port 5000)."""
+
     run_server()
 
 
-# ========================== IMU Process ==========================
-def imu_process(server_ip, port):
-    """Stream IMU data to the PC over TCP with automatic reconnection."""
+# ========================== IMU Process (+ VM Thread) ==========================
+def imu_vm_process(server_ip, imu_port, vm_port):
+    """Stream IMU data to the PC over TCP. Spawns VM streamer as a daemon thread."""
+
+    # Launch INA226 streamer inside this process
+    vm_thread = threading.Thread(target=vm_streamer, args=(server_ip, vm_port), daemon=True)
+    vm_thread.start()
+
     sensor = LSM6DSV16X()
     sensor.initialize()
 
     while True:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                print(f"IMU: Connecting to PC at {server_ip}:{port}...")
-                s.connect((server_ip, port))
+                print(f"IMU: Connecting to PC at {server_ip}:{imu_port}...")
+                s.connect((server_ip, imu_port))
                 print("IMU: Connected. Waiting for commands.")
 
                 is_streaming = False
@@ -93,11 +178,13 @@ def motor_process(port):
     Monkey-patches get_key so drive_distance() abort works over the network
     instead of reading from stdin.
     """
+
     # Abort mechanism — replaces terminal-based get_key()
     abort_event = threading.Event()
 
     def network_get_key(timeout=None):
         """Drop-in replacement for robot_controller.get_key."""
+
         if abort_event.is_set():
             abort_event.clear()
             return ' '  # Spacebar = abort in _monitor_movement
@@ -124,6 +211,7 @@ def motor_process(port):
 
     def socket_reader(conn):
         """Background thread: reads commands from PC, routes ABORT to event."""
+        
         try:
             buf = ""
             while True:
@@ -268,7 +356,7 @@ def main():
         return p
 
     start_process("CameraServer", camera_process)
-    start_process("IMUStreamer", imu_process, (PC_IP, IMU_PORT))
+    start_process("IMUStreamer", imu_vm_process, (PC_IP, IMU_PORT, VM_PORT))
     start_process("MotorEngine", motor_process, (MOTOR_PORT,))
 
     print("\nAll processes running. Press Ctrl+C to stop.\n")

@@ -30,6 +30,7 @@ def reset_camera_hardware():
     Grabs a single frame via v4l2-ctl to unfreeze a stuck ISP
     (Image Signal Processor), clearing 'select() timeout' locks.
     """
+    
     if os.path.exists('/dev/video0'):
         print("CAM: Found /dev/video0. Attempting hardware kickstart...")
         try:
@@ -51,6 +52,7 @@ def open_camera():
     Open the camera with settings known to work on RPi legacy stack.
     Uses MJPG pixel format at 640x480 to avoid 'select() timeout' errors.
     """
+
     idx = 0
 
     # Open with V4L2 backend explicitly
@@ -74,6 +76,7 @@ def open_camera():
 
 def release_camera():
     """Release camera resources on program exit."""
+
     global camera, is_running
     is_running = False
     time.sleep(0.1)  # Give reader thread time to exit its loop
@@ -91,6 +94,7 @@ def camera_reader_worker():
     Dedicated camera reader thread — the ONLY thread that touches the camera.
     Continuously reads frames, processes them, and updates the shared buffer.
     """
+
     global camera, current_frame, is_running
 
     while is_running:
@@ -116,9 +120,6 @@ def camera_reader_worker():
             # Flip 180° (camera is mounted upside-down)
             frame = cv2.flip(frame, -1)
 
-            # Downscale for bandwidth: capture at 640x480 (safe), serve at 320x240
-            frame = cv2.resize(frame, (320, 240))
-
             # Draw crosshair overlay at center
             h, w, _ = frame.shape
             cx, cy = w // 2, h // 2
@@ -127,7 +128,7 @@ def camera_reader_worker():
             cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
 
             # Encode to JPEG and update the shared buffer
-            ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+            ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if ret:
                 with frame_lock:
                     current_frame = buffer.tobytes()
@@ -142,6 +143,7 @@ def generate_frames():
     Generator for the MJPEG stream — grabs the latest frame from the shared buffer.
     Yields at ~20 FPS to avoid overloading the web server.
     """
+
     global is_running
 
     while is_running:
@@ -154,12 +156,13 @@ def generate_frames():
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_data + b'\r\n')
 
-        time.sleep(0.05)  # ~20 FPS
+        time.sleep(0.0333)  # ~30 FPS
 
 
 @app.route('/')
 def video_feed():
     """Flask route serving the MJPEG video stream."""
+    
     response = Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
@@ -167,6 +170,7 @@ def video_feed():
 
 def run_server():
     """Initialize camera hardware and start both the reader thread and Flask server."""
+
     print("CAM: Server Thread Starting...")
 
     # Reset hardware once on startup to clear any stale driver state
@@ -183,6 +187,7 @@ def run_server():
 
 def start_camera_thread():
     """Start the entire camera server system in a daemon thread."""
+
     t = threading.Thread(target=run_server)
     t.daemon = True
     t.start()
