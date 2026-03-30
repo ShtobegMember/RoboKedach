@@ -1,19 +1,22 @@
 """
-rpi_main2.py - Raspberry Pi main process manager.
-Launches camera server, motor engine, and LIDAR+IMU ROS2 node as separate processes.
-Monitors health and auto-restarts on failure.
+rpi_main.py - Raspberry Pi process manager.
+Spawns three multiprocessing workers on startup: VMStreamer (INA226 power data
+over TCP), MotorEngine (motor commands over TCP), and CameraServer (MJPEG over
+HTTP). A fourth process (LIDARNode) launches on demand when the PC sends a
+START_SLAM command. All processes are health-monitored with up to 3 auto-restarts.
 """
 
-import multiprocessing
-import subprocess
-import threading
-import queue
-import socket
-import time
-import struct
 import sys
+import time
 import os
 import smbus2
+
+import socket
+import struct
+import subprocess
+import threading
+import multiprocessing
+import queue
 
 from camera_server import run_server
 import robot_controller
@@ -24,18 +27,18 @@ from robot_controller import RobotConfig, MotorController, MovementController, D
 PC_IP = "192.168.1.1"
 
 MOTOR_PORT = 65433
-VM_PORT = 65434
+VM_PORT    = 65434
 
 # INA226 (Voltage Monitor) on I2C bus 3
-INA226_BUS        = 3
-INA226_ADDR       = 0x40
-INA226_SHUNT_OHMS = 0.01   # R010 = 10 mOhm
-INA226_REG_CONFIG = 0x00
-INA226_REG_BUS_V  = 0x02
+INA226_BUS         = 3
+INA226_ADDR        = 0x40
+INA226_SHUNT_OHMS  = 0.01       # R010 = 10 mOhm
+INA226_REG_CONFIG  = 0x00
+INA226_REG_BUS_V   = 0x02
 INA226_REG_CURRENT = 0x04
-INA226_REG_CAL    = 0x05
-INA226_BUS_V_LSB  = 1.25e-3   # 1.25 mV/bit
-INA226_CURRENT_LSB = 0.00025  # 0.25 mA/bit
+INA226_REG_CAL     = 0x05
+INA226_BUS_V_LSB   = 1.25e-3    # 1.25 mV/bit
+INA226_CURRENT_LSB = 0.00025    # 0.25 mA/bit
 
 # Pin Cyclone DDS to the fiber interface only, unicast data to prevent network flood
 CYCLONEDDS_CFG = (
@@ -114,13 +117,15 @@ def vm_streamer(server_ip, port):
 # ========================== Camera Process ==========================
 def camera_process():
     """Run the MJPEG camera server (Flask on port 5000)."""
+
     run_server()
 
 
 # ========================== LIDAR Process ==========================
 def lidar_process():
     """Launch the ROS2 LIDAR+IMU node via ros2 launch."""
-    time.sleep(5)  # Cooldown before (re)start — let USB/I2C devices fully release
+
+    time.sleep(2)  # Cooldown before (re)start — let USB/I2C devices fully release
 
     subprocess.run(["bash", "-c",
         "export ROS_DOMAIN_ID=1 && "
@@ -133,12 +138,13 @@ def lidar_process():
 
 
 # ========================== Motor Process ==========================
-def motor_process(port):
+def motor_process(port, slam_event):
     """
     Motor engine: TCP server receiving movement commands from the PC.
     Monkey-patches get_key so drive_distance() abort works over the network
     instead of reading from stdin.
     """
+
     # Abort mechanism — replaces terminal-based get_key()
     abort_event = threading.Event()
 
@@ -170,6 +176,7 @@ def motor_process(port):
 
     def socket_reader(conn):
         """Background thread: reads commands from PC, routes ABORT to event."""
+
         try:
             buf = ""
             while True:
@@ -233,11 +240,11 @@ def motor_process(port):
                             moved = True
                         elif cmd == "LEFT":
                             conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.STOP)
+                            move_ctrl.drive_distance(d.STOP, d.FORWARD)
                             moved = True
                         elif cmd == "RIGHT":
                             conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.STOP, d.FORWARD)
+                            move_ctrl.drive_distance(d.FORWARD, d.STOP)
                             moved = True
                         elif cmd == "FWD90":
                             conn.sendall(b"BUSY\n")
@@ -249,11 +256,11 @@ def motor_process(port):
                             moved = True
                         elif cmd == "LEFT90":
                             conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.STOP, 0.25)
+                            move_ctrl.drive_distance(d.STOP, d.FORWARD, 0.25)
                             moved = True
                         elif cmd == "RIGHT90":
                             conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.STOP, d.FORWARD, 0.25)
+                            move_ctrl.drive_distance(d.FORWARD, d.STOP, 0.25)
                             moved = True
                         elif cmd == "SPEED_UP":
                             motor_ctrl.adjust_speed(config.speed_increment)
@@ -261,6 +268,8 @@ def motor_process(port):
                             motor_ctrl.adjust_speed(-config.speed_increment)
                         elif cmd == "RESET_ENC":
                             motor_ctrl.reset_encoders()
+                        elif cmd == "START_SLAM":
+                            slam_event.set()
 
                         # Drain stale movement commands after a blocking move
                         if moved:
@@ -317,10 +326,11 @@ def main():
         print(f"  [{name}] started (PID {p.pid})")
         return p
 
+    slam_event = multiprocessing.Event()
+
     start_process("VMStreamer", vm_streamer, (PC_IP, VM_PORT))
-    start_process("MotorEngine", motor_process, (MOTOR_PORT,))
+    start_process("MotorEngine", motor_process, (MOTOR_PORT, slam_event))
     start_process("CameraServer", camera_process)
-    start_process("LIDARNode", lidar_process)
 
     print("\nAll processes running. Press Ctrl+C to stop.\n")
 
@@ -329,6 +339,15 @@ def main():
 
     try:
         while True:
+            # Start LIDAR node on PC command
+            if slam_event.is_set():
+                slam_event.clear()
+                if "LIDARNode" not in procs or not procs["LIDARNode"][0].is_alive():
+                    start_process("LIDARNode", lidar_process)
+                    print("MAIN: LIDAR node started by PC command.")
+                else:
+                    print("MAIN: LIDAR node already running.")
+
             for name, (proc, target, args) in list(procs.items()):
                 if not proc.is_alive():
                     count = restart_counts.get(name, 0)

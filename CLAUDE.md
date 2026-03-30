@@ -42,27 +42,28 @@ Both sides export a Cyclone DDS configuration via the `CYCLONEDDS_URI` environme
 ### A. The Raspberry Pi (`rpi_main.py`)
 The Pi runs headless. **No GUI, heavy math, or SLAM computation runs on the Pi.**
 
-`rpi_main.py` is the process manager. It spawns four `multiprocessing.Process` workers and monitors them in a health loop. If a process dies, it auto-restarts up to 3 times; after that, the process is abandoned with an error log.
+`rpi_main.py` is the process manager. It spawns three `multiprocessing.Process` workers on startup and monitors them in a health loop. If a process dies, it auto-restarts up to 3 times; after that, the process is abandoned with an error log. A fourth process (LIDARNode) is launched on demand when the PC sends a `START_SLAM` command via the motor TCP connection.
 
-**Startup order:** VMStreamer → MotorEngine → CameraServer → LIDARNode.
+**Startup order:** VMStreamer → MotorEngine → CameraServer. LIDARNode starts on PC command.
 
 * **Pure Python Processes**:
     * **VMStreamer**: Reads bus voltage and current from the INA226 on I2C bus 3. Streams packed float pairs to the PC via TCP (port `65434`) at 2 Hz. Auto-reconnects if the PC is unreachable.
-    * **MotorEngine**: TCP server (port `65433`) receiving movement commands from the PC. Wraps `roboclaw.py` via `robot_controller.py`. Supports full-rotation and quarter-rotation commands, speed adjustment, encoder reset, and spacebar abort. The abort mechanism works over the network by monkey-patching `robot_controller.get_key()`. After each blocking move, stale commands are drained from the queue.
+    * **MotorEngine**: TCP server (port `65433`) receiving movement commands from the PC. Wraps `roboclaw.py` via `robot_controller.py`. Supports full-rotation and quarter-rotation commands, speed adjustment, encoder reset, spacebar abort, and a `START_SLAM` command that signals `main()` to launch the LIDARNode. The abort mechanism works over the network by monkey-patching `robot_controller.get_key()`. After each blocking move, stale commands are drained from the queue.
     * **CameraServer**: Runs a Flask HTTP server (port `5000`) serving an MJPEG stream. A dedicated reader thread owns the camera exclusively — web clients grab frames from a shared buffer. Includes a `v4l2-ctl` hardware kickstart on startup to clear stale driver state.
 * **ROS Node**:
-    * **LIDARNode**: Launches `ros2 launch robot_bringup record_c1.launch.py` in a bash subprocess, exporting `CYCLONEDDS_URI` and `ROS_DOMAIN_ID` in the same shell. Publishes `LaserScan` and `Imu` messages to the ROS network. Has a 5-second cooldown before each (re)start to let USB/I2C devices fully release. Runs `sudo chmod 666 /dev/ttyUSB0` before launch.
+    * **LIDARNode**: Launched on demand via `START_SLAM` command from the PC. Runs `ros2 launch robot_bringup record_c1.launch.py` in a bash subprocess, exporting `CYCLONEDDS_URI` and `ROS_DOMAIN_ID` in the same shell. Publishes `LaserScan` and `Imu` messages to the ROS network. Has a 5-second cooldown before each (re)start to let USB/I2C devices fully release. Runs `sudo chmod 666 /dev/ttyUSB0` before launch.
 
 ### B. The Base Station PC (`pc_main.py`)
 * **The Dashboard (PyQt6 HUD)**:
     * Full-screen camera feed background pulled via HTTP from the Pi's Flask server.
     * Keyboard teleoperation: arrow keys for movement (full rotation), Shift+arrow for 90-degree turns, +/- for speed, Space for abort, R for encoder reset. Supports continuous movement while a key is held — re-sends the command on each `READY` acknowledgment from the Pi.
     * HUD overlay: bottom status bar (camera, motor, speed, SLAM status) and a Power Monitor panel showing voltage + current with battery health color indicator (green >= 11.1V, yellow >= 10.2V, red below).
-    * **SLAMWorker** (QThread): Auto-launches RViz2 and Cartographer inside WSL on dashboard startup. Builds WSL commands via `WSL_ROS_PREAMBLE` which sources ROS + workspace setups and exports `CYCLONEDDS_URI`. All subprocesses use `stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL` to prevent pipe buffer deadlocks. Monitors process health; on shutdown, runs `pkill ros2` inside WSL and terminates Windows-side `wsl.exe` wrappers.
-    * **Bag recording**: Scaffolding exists (commented out) for a Start/Stop SLAM button that toggles rosbag recording of `/scan`, `/imu/data`, `/tf`, `/tf_static`. Not yet active.
+    * **SLAMWorker** (QThread): Auto-launches RViz2 and Cartographer inside WSL on dashboard startup. Builds WSL commands via `WSL_ROS_PREAMBLE` which sources ROS + workspace setups and exports `CYCLONEDDS_URI`. All subprocesses use `stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL` to prevent pipe buffer deadlocks. Monitors process health; on shutdown, runs `pkill ros2` inside WSL and terminates Windows-side `wsl.exe` wrappers. Two HUD buttons:
+        * **Start SLAM button**: Sends `START_SLAM` command to the Pi via the motor TCP connection, triggering the LIDARNode launch. One-shot — disables after press, re-enables only if SLAM core processes die.
+        * **Record Bag button**: Toggles `ros2 bag record` of `/scan`, `/imu/data`, `/tf`, `/tf_static`. Only enabled after Start SLAM is pressed. Each recording gets a timestamped output name (`bag_YYYY-MM-DD_HH-MM-SS`) saved to `~/bags/`, allowing multiple recordings per session. Stop sends `SIGINT` via `pkill -INT` inside WSL for graceful flush, with a 5-second timeout fallback to force-terminate.
 
 * **ROS Components** (launched inside WSL via `SLAMWorker`):
-    * **RViz2**: Visualization, launched automatically with a saved config (`mapper.rviz`).
+    * **RViz2**: Visualization, launched automatically on dashboard startup with a saved config (`mapper.rviz`).
     * **Cartographer SLAM**: `ros2 launch my_robot_slam online_slam.launch.py`. Subscribes to LIDAR scans and IMU data from the Pi, generates a live map.
 
 ### C. ROS Launch File (on Pi, not in this repo)

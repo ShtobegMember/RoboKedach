@@ -1,30 +1,35 @@
 """
-pc_main2.py - Base Station HUD Dashboard with SLAM lifecycle management.
-Displays live camera feed as background, captures arrow keys for remote
-motor control, and manages WSL/ROS2 SLAM pipeline (RViz2 + Cartographer).
+pc_main.py - Base Station HUD Dashboard.
+PyQt6 full-screen overlay with live camera feed, keyboard teleoperation, and
+power monitoring. Auto-launches RViz2 + Cartographer in WSL on startup. Two HUD
+buttons: Start SLAM (sends START_SLAM to Pi to launch LIDAR/IMU) and Record Bag
+(toggles timestamped rosbag recording with graceful SIGINT stop).
 """
 
 import sys
+import time
+from datetime import datetime
+
 import socket
 import struct
 import subprocess
-import time
 import threading
 import urllib.request
+
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QFont, QColor, QPen
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton
 
 
 # ========================== Configuration ==========================
-RPI_IP = "192.168.1.2"
+RPI_IP     = "192.168.1.2"
 CAMERA_URL = f"http://{RPI_IP}:5000/"
 
 MOTOR_PORT = 65433
-VM_PORT = 65434
+VM_PORT    = 65434
 
 WSL_DISTRO = "Ubuntu-24.04"
-WSL_PATH = "~/cartographer_ws"
+WSL_PATH   = "~/cartographer_ws"
 
 # Pin Cyclone DDS to the fiber interface only, unicast data to prevent network flood
 PC_FIBER_IP = "192.168.1.1"  # PC's fiber adapter IP — verify with ipconfig
@@ -48,14 +53,17 @@ SLAM_CORE_CMDS = {
     "Cartographer": "ros2 launch my_robot_slam online_slam.launch.py",
 }
 
-# SLAM_LIVE_CMDS = {
-#     "Bag Record": "ros2 bag record -o clean_session_v1 /scan /imu/data /tf /tf_static",
-# }
+def _bag_record_cmd():
+    """Generate a bag record command with a timestamped output name."""
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"mkdir -p ~/bags && ros2 bag record -o ~/bags/bag_{stamp} /scan /imu/data /tf /tf_static"
 
 
 # ========================== MJPEG Stream Worker ==========================
 class MJPEGStreamWorker(QThread):
     """Fetches MJPEG frames from the RPi camera HTTP server and emits QImages."""
+
     frame_received = pyqtSignal(QImage)
     status_update = pyqtSignal(str)
 
@@ -164,6 +172,7 @@ class VMServerWorker(QThread):
 # ========================== Motor Command Worker ==========================
 class MotorCommandWorker(QThread):
     """TCP client that sends motor commands to and receives status from the RPi."""
+
     status_update = pyqtSignal(str)
     speed_update = pyqtSignal(int)
     motor_ready = pyqtSignal()
@@ -225,6 +234,7 @@ class MotorCommandWorker(QThread):
 
     def send_command(self, cmd):
         """Thread-safe command send. Called from the GUI thread."""
+
         with self._lock:
             if self._sock:
                 try:
@@ -246,17 +256,18 @@ class MotorCommandWorker(QThread):
 # ========================== SLAM Worker ==========================
 class SLAMWorker(QThread):
     """Manages WSL/ROS2 SLAM subprocesses (RViz2, Cartographer, bag recording)."""
+
     status_update = pyqtSignal(str)
     core_running = pyqtSignal(bool)
-    # live_running = pyqtSignal(bool)
+    live_running = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
         self.is_running = True
         self._core_procs = {}   # name -> Popen
-        # self._live_procs = {}   # name -> Popen
-        # self._start_live_flag = threading.Event()
-        # self._stop_live_flag = threading.Event()
+        self._live_procs = {}   # name -> Popen
+        self._start_live_flag = threading.Event()
+        self._stop_live_flag = threading.Event()
         self._core_ok = False
 
     def _build_wsl_cmd(self, command):
@@ -264,7 +275,7 @@ class SLAMWorker(QThread):
                 WSL_ROS_PREAMBLE + command]
 
     def run(self):
-        # Spawn core processes (RViz2 + Cartographer)
+        # Auto-launch core processes (RViz2 + Cartographer)
         try:
             for name, cmd in SLAM_CORE_CMDS.items():
                 self.status_update.emit(f"SLAM: Launching {name}...")
@@ -293,68 +304,87 @@ class SLAMWorker(QThread):
                     self._core_ok = False
                     self.core_running.emit(False)
 
-            # # Handle start_live request
-            # if self._start_live_flag.is_set():
-            #     self._start_live_flag.clear()
-            #     if self._core_ok:
-            #         try:
-            #             for name, cmd in SLAM_LIVE_CMDS.items():
-            #                 self.status_update.emit(f"SLAM: Starting {name}...")
-            #                 proc = subprocess.Popen(
-            #                     self._build_wsl_cmd(cmd),
-            #                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            #                 )
-            #                 self._live_procs[name] = proc
-            #             self.live_running.emit(True)
-            #             self.status_update.emit("SLAM: Live recording")
-            #         except (OSError, FileNotFoundError) as e:
-            #             self.status_update.emit(f"SLAM: Live launch failed — {e}")
+            # Handle start_live request
+            if self._start_live_flag.is_set():
+                self._start_live_flag.clear()
+                if self._core_ok:
+                    try:
+                        cmd = _bag_record_cmd()
+                        self.status_update.emit("SLAM: Starting Bag Record...")
+                        proc = subprocess.Popen(
+                            self._build_wsl_cmd(cmd),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        self._live_procs["Bag Record"] = proc
+                        self.live_running.emit(True)
+                        self.status_update.emit("SLAM: Recording bag")
+                    except (OSError, FileNotFoundError) as e:
+                        self.status_update.emit(f"SLAM: Live launch failed — {e}")
 
-            # # Handle stop_live request
-            # if self._stop_live_flag.is_set():
-            #     self._stop_live_flag.clear()
-            #     self._terminate_live()
-
-            # # Check if live processes died on their own
-            # for name, proc in list(self._live_procs.items()):
-            #     ret = proc.poll()
-            #     if ret is not None:
-            #         self.status_update.emit(f"SLAM: {name} exited with code {ret}")
-            #         del self._live_procs[name]
+            # Handle stop_live request
+            if self._stop_live_flag.is_set():
+                self._stop_live_flag.clear()
+                self._terminate_live()
+            else:
+                # Check if live processes died on their own (skip if we just terminated)
+                had_live = bool(self._live_procs)
+                for name, proc in list(self._live_procs.items()):
+                    ret = proc.poll()
+                    if ret is not None:
+                        self.status_update.emit(f"SLAM: {name} exited with code {ret}")
+                        del self._live_procs[name]
+                if had_live and not self._live_procs:
+                    self.live_running.emit(False)
 
             time.sleep(0.5)
 
-    # def start_live(self):
-    #     """Called from the GUI thread to start the live pipeline."""
-    #     self._start_live_flag.set()
+    def start_live(self):
+        """Called from the GUI thread to start bag recording."""
 
-    # def stop_live(self):
-    #     """Called from the GUI thread to stop the live pipeline."""
-    #     self._stop_live_flag.set()
+        self._start_live_flag.set()
 
-    # def _terminate_live(self):
-    #     """Terminate live processes only (not core)."""
-    #     for name, proc in self._live_procs.items():
-    #         if proc.poll() is None:
-    #             proc.terminate()
-    #     self._live_procs.clear()
-    #     self.live_running.emit(False)
-    #     self.status_update.emit("SLAM: Live stopped")
+    def stop_live(self):
+        """Called from the GUI thread to stop the live pipeline."""
+
+        self._stop_live_flag.set()
+
+    def _terminate_live(self):
+        """Gracefully stop live processes via SIGINT inside WSL (like Ctrl+C)."""
+
+        for _, proc in self._live_procs.items():
+            if proc.poll() is None:
+                # Send SIGINT to the actual process inside WSL, not the wrapper
+                subprocess.run(
+                    ["wsl", "-d", WSL_DISTRO, "bash", "-ic",
+                     "pkill -INT -f 'ros2 bag record'"],
+                    check=False
+                )
+                # Give it a moment to flush metadata, then force-kill if stuck
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+        self._live_procs.clear()
+        self.live_running.emit(False)
+        self.status_update.emit("SLAM: Live stopped")
 
     def stop(self):
         """Full shutdown: kill all ROS2 in WSL, terminate all wrappers."""
+
         self.is_running = False
 
-        # Kill ROS2 processes inside WSL
+        # Kill all ROS2 processes inside WSL (covers both core and bag record)
         subprocess.run(
             ["wsl", "-d", WSL_DISTRO, "bash", "-ic", "pkill ros2"],
             check=False
         )
 
         # Terminate all Windows-side wsl.exe wrappers
-        for proc in self._core_procs.values():
+        for proc in list(self._live_procs.values()) + list(self._core_procs.values()):
             if proc.poll() is None:
                 proc.terminate()
+        self._live_procs.clear()
+        self._core_procs.clear()
 
         self.quit()
 
@@ -384,24 +414,23 @@ class HUDOverlay(QLabel):
         border = QPen(green, 1)
 
         title_font = QFont("Consolas", 11, QFont.Weight.Bold)
-        data_font = QFont("Consolas", 10)
         status_font = QFont("Consolas", 9)
 
-        # --- Power Monitor Panel (below accelerometer) ---
-        pm_y = 150
+        # --- Power Monitor Panel (top-left) ---
+        pm_y = 10
         p.setBrush(panel_bg)
         p.setPen(border)
         p.drawRoundedRect(10, pm_y, 220, 80, 8, 8)
 
         p.setFont(title_font)
-        p.setPen(yellow)
+        p.setPen(green)
         p.drawText(22, pm_y + 24, "POWER MONITOR")
 
         p.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         vm = self.hud.vm_data
         p.setPen(white)
-        p.drawText(28, pm_y + 50, f"{vm['voltage']:6.2f} V")
-        p.drawText(28, pm_y + 70, f"{vm['current']:6.3f} A")
+        p.drawText(28, pm_y + 50, f"{vm['voltage']:7.3f} V")
+        p.drawText(28, pm_y + 70, f"{vm['current']:7.3f} A")
 
         # Voltage color indicator
         v = vm['voltage']
@@ -453,7 +482,8 @@ class HUDWindow(QMainWindow):
         self.motor_status = "Disconnected"
         self.motor_speed = 0
         self.slam_status = "SLAM: Starting..."
-        # self._slam_live = False
+        self._slam_live = False
+        self._slam_started = False
 
         # Continuous movement state
         self._held_move_cmd = None   # Command string for the currently held key
@@ -469,24 +499,34 @@ class HUDWindow(QMainWindow):
         self.overlay = HUDOverlay(self)
         self.overlay.raise_()
 
-        # # Start/Stop SLAM button
-        # self.slam_btn = QPushButton("Start SLAM", self)
-        # self.slam_btn.setEnabled(False)
-        # self.slam_btn.setStyleSheet(
-        #     "QPushButton {"
-        #     "  background-color: rgba(0, 0, 0, 160);"
-        #     "  color: #00ff00;"
-        #     "  border: 1px solid #00ff00;"
-        #     "  border-radius: 5px;"
-        #     "  font-family: Consolas;"
-        #     "  font-size: 12px;"
-        #     "  padding: 8px 20px;"
-        #     "}"
-        #     "QPushButton:hover { background-color: rgba(0, 255, 0, 40); }"
-        #     "QPushButton:disabled { color: #555555; border-color: #555555; }"
-        # )
-        # self.slam_btn.clicked.connect(self._on_slam_btn)
-        # self.slam_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Shared button style
+        btn_style = (
+            "QPushButton {"
+            "  background-color: rgba(0, 0, 0, 160);"
+            "  color: #00ff00;"
+            "  border: 1px solid #00ff00;"
+            "  border-radius: 5px;"
+            "  font-family: Consolas;"
+            "  font-size: 14px;"
+            "  font-weight: bold;"
+            "  padding: 8px 20px;"
+            "}"
+            "QPushButton:hover { background-color: rgba(0, 255, 0, 40); }"
+            "QPushButton:disabled { color: #555555; border-color: #555555; }"
+        )
+
+        # Start SLAM button (launches RViz2 + Cartographer)
+        self.slam_btn = QPushButton("Start SLAM", self)
+        self.slam_btn.setStyleSheet(btn_style)
+        self.slam_btn.clicked.connect(self._on_slam_btn)
+        self.slam_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        # Record Bag button (start/stop bag recording, disabled until SLAM is running)
+        self.bag_btn = QPushButton("Record Bag", self)
+        self.bag_btn.setEnabled(False)
+        self.bag_btn.setStyleSheet(btn_style)
+        self.bag_btn.clicked.connect(self._on_bag_btn)
+        self.bag_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         # Camera stream worker
         self.cam_worker = MJPEGStreamWorker(CAMERA_URL)
@@ -512,23 +552,31 @@ class HUDWindow(QMainWindow):
         self.vm_timer.timeout.connect(self.overlay.update)
         self.vm_timer.start(500)
 
-        # SLAM worker (auto-launches core on start)
+        # SLAM worker (auto-launches RViz2 + Cartographer)
         self.slam_worker = SLAMWorker()
         self.slam_worker.status_update.connect(self._on_slam_status)
         self.slam_worker.core_running.connect(self._on_core_running)
-        # self.slam_worker.live_running.connect(self._on_live_running)
+        self.slam_worker.live_running.connect(self._on_live_running)
         self.slam_worker.start()
 
-    # # --- SLAM Button ---
-    # def _on_slam_btn(self):
-    #     if self._slam_live:
-    #         self.slam_worker.stop_live()
-    #     else:
-    #         self.slam_worker.start_live()
+    # --- SLAM Buttons ---
+    def _on_slam_btn(self):
+        self.motor_worker.send_command("START_SLAM")
+        self._slam_started = True
+        self.slam_btn.setEnabled(False)
+        self.slam_btn.setText("SLAM Active")
+        self.bag_btn.setEnabled(True)
+
+    def _on_bag_btn(self):
+        if self._slam_live:
+            self.slam_worker.stop_live()
+        else:
+            self.slam_worker.start_live()
 
     # --- Key Input ---
     def keyPressEvent(self, event):
         """Capture arrow keys and send motor commands to the RPi."""
+
         if event.isAutoRepeat():
             return
 
@@ -572,6 +620,7 @@ class HUDWindow(QMainWindow):
 
     def keyReleaseEvent(self, event):
         """Clear held movement state when the movement key is released."""
+
         if event.isAutoRepeat():
             return
 
@@ -603,6 +652,7 @@ class HUDWindow(QMainWindow):
 
     def _on_motor_ready(self):
         """When RPi finishes a rotation and is ready, re-send if key still held."""
+
         if self._held_move_cmd:
             self.motor_worker.send_command(self._held_move_cmd)
 
@@ -619,23 +669,29 @@ class HUDWindow(QMainWindow):
         self.overlay.update()
 
     def _on_core_running(self, running):
-        pass
-        # self.slam_btn.setEnabled(running)
-        # if not running:
-        #     self._slam_live = False
-        #     self.slam_btn.setText("Start SLAM")
+        if running and not self._slam_started:
+            self.slam_btn.setEnabled(True)
+        if not running:
+            self._slam_live = False
+            self._slam_started = False
+            self.slam_btn.setEnabled(False)
+            self.slam_btn.setText("Start SLAM")
+            self.bag_btn.setEnabled(False)
+            self.bag_btn.setText("Record Bag")
 
-    # def _on_live_running(self, running):
-    #     self._slam_live = running
-    #     self.slam_btn.setText("Stop SLAM" if running else "Start SLAM")
+    def _on_live_running(self, running):
+        self._slam_live = running
+        self.bag_btn.setText("Stop Bag" if running else "Record Bag")
 
     # --- Events ---
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.overlay.setGeometry(0, 0, self.width(), self.height())
-        # # Position SLAM button at top-right
-        # btn_w, btn_h = 140, 36
-        # self.slam_btn.setGeometry(self.width() - btn_w - 15, 15, btn_w, btn_h)
+        # Position buttons at top-right (Start SLAM on top, Record Bag below)
+        btn_w, btn_h = 150, 36
+        x = self.width() - btn_w - 15
+        self.slam_btn.setGeometry(x, 15, btn_w, btn_h)
+        self.bag_btn.setGeometry(x, 15 + btn_h + 8, btn_w, btn_h)
 
     def closeEvent(self, event):
         self.vm_timer.stop()
