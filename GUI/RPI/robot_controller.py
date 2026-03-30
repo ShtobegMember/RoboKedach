@@ -65,8 +65,8 @@ class RobotConfig:
     address: int = 0x80
 
     # Motor direction corrections
-    m1_multiplier: int = 1
-    m2_multiplier: int = 1
+    m1_multiplier: int = -1
+    m2_multiplier: int = -1
 
     # Encoder ticks per full wheel rotation
     ticks_per_cycle: int = 8400
@@ -114,8 +114,8 @@ class MotorController:
         Read raw encoder values from both motors.
         Returns: (success, m1_value, m2_value)
         """
-        status1, enc1, _ = self.rc.ReadEncM1(self.config.address)
-        status2, enc2, _ = self.rc.ReadEncM2(self.config.address)
+        status1, enc1, _ = self.rc.ReadEncM2(self.config.address)
+        status2, enc2, _ = self.rc.ReadEncM1(self.config.address)
 
         if not (status1 and status2):
             return False, 0, 0
@@ -162,19 +162,22 @@ class MotorController:
 
         speed = max(0, min(127, speed))  # Clamp to valid RoboClaw range
 
-        if motor == 1:
+        # Swap the motor targeting so logical M1 commands physical M2, and vice versa
+        physical_motor = 2 if motor == 1 else 1
+
+        if physical_motor == 1:
             if direction == Direction.FORWARD:
-                self.rc.ForwardM1(self.config.address, speed)
-            elif direction == Direction.BACKWARD:
                 self.rc.BackwardM1(self.config.address, speed)
+            elif direction == Direction.BACKWARD:
+                self.rc.ForwardM1(self.config.address, speed)
             else:
                 self.rc.ForwardM1(self.config.address, 0)
 
-        elif motor == 2:
+        elif physical_motor == 2:
             if direction == Direction.FORWARD:
-                self.rc.ForwardM2(self.config.address, speed)
-            elif direction == Direction.BACKWARD:
                 self.rc.BackwardM2(self.config.address, speed)
+            elif direction == Direction.BACKWARD:
+                self.rc.ForwardM2(self.config.address, speed)
             else:
                 self.rc.ForwardM2(self.config.address, 0)
 
