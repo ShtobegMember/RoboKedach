@@ -1,34 +1,45 @@
-import smbus2
+"""
+LSM6DSV16X 6-axis (6-DOF) IMU Reader
+Reads accelerometer (m/s²) and gyroscope (dps) data from an LSM6DSV16X over I2C.
+
+Wiring:
+  - VCC -> 3.3V (Pi pin 1)
+  - GND -> GND  (Pi pin 9)
+  - SDA -> SDA  (Pi pin 3 / GPIO 2)
+  - SCL -> SCL  (Pi pin 5 / GPIO 3)
+
+Hardware: LSM6DSV16X on I2C bus 1, default address 0x6B.
+"""
+
 import time
 import sys
+import smbus2
 
 
-# --- Configuration ---
+# --------------- Configuration ---------------
+BUS_NUM        = 1
 DEVICE_ADDRESS = 0x6B
-BUS_NUM = 1
 
 # Register Map
-CTRL1_XL = 0x10
-CTRL2_G = 0x11
-CTRL3_C = 0x12
+CTRL1_XL   = 0x10
+CTRL2_G    = 0x11
+CTRL3_C    = 0x12
 STATUS_REG = 0x1E
-OUTX_L_G = 0x22
-OUTX_L_A = 0x28
+OUTX_L_G   = 0x22
+OUTX_L_A   = 0x28
 
-# --- SENSITIVITY FACTORS (Based on 0x04 Config) ---
-# Accel: Range is ±2g (Default for 0x04)
-ACCEL_FACTOR = 0.061 / 1000.0
-
-# Gyro: Range is ±125 dps (Default for 0x04)
-# Sensitivity for ±125 dps is 4.375 mdps/LSB
-GYRO_FACTOR = 4.375 / 1000.0
+# Sensitivity Factors (Based on 0x04 Config defaults)
+ACCEL_FACTOR = 0.061 / 1000.0   # Accel range is ±2g
+GYRO_FACTOR  = 4.375 / 1000.0   # Gyro range is ±125 dps
 
 GRAVITY_MS2 = 9.80665
 THRESHOLD = 0.01
 
 
+# --------------- Helper Functions ---------------
 def read_word_2c(bus, reg):
     """Reads 2 bytes and converts to signed 16-bit integer."""
+
     try:
         low = bus.read_byte_data(DEVICE_ADDRESS, reg)
         high = bus.read_byte_data(DEVICE_ADDRESS, reg + 1)
@@ -59,6 +70,7 @@ def init_sensor():
 
         time.sleep(0.2)
         return bus
+    
     except Exception as e:
         print(f"Error initializing: {e}")
         sys.exit(1)
@@ -68,11 +80,10 @@ def calibrate_sensor(bus):
     print("--- CALIBRATION (100 Samples) ---", end="", flush=True)
 
     # Assumption: Robot is already stationary when script starts
-
     sum_ax, sum_ay, sum_az = 0, 0, 0
     sum_gx, sum_gy, sum_gz = 0, 0, 0
     samples = 0
-    target_samples = 100  # Updated to 100 as requested
+    target_samples = 100
     timeout = 0
 
     # Flush buffer once
@@ -83,8 +94,8 @@ def calibrate_sensor(bus):
 
     while samples < target_samples:
         status = bus.read_byte_data(DEVICE_ADDRESS, STATUS_REG)
+
         if status & 0x03:
-            # Read Raw
             ax = read_word_2c(bus, OUTX_L_A) * ACCEL_FACTOR * GRAVITY_MS2
             ay = read_word_2c(bus, OUTX_L_A + 2) * ACCEL_FACTOR * GRAVITY_MS2
             az = read_word_2c(bus, OUTX_L_A + 4) * ACCEL_FACTOR * GRAVITY_MS2
@@ -102,12 +113,12 @@ def calibrate_sensor(bus):
 
             samples += 1
             timeout = 0
+        
         else:
             timeout += 1
             if timeout > 1000:
                 print(" Error: Timeout.")
                 return [0, 0, 0, 0, 0, 0]
-            # No sleep needed here for max speed
 
     print(" Done.")
 
@@ -122,6 +133,7 @@ def calibrate_sensor(bus):
     return [off_ax, off_ay, off_az, off_gx, off_gy, off_gz]
 
 
+# --------------- Main ---------------
 def main():
     bus = init_sensor()
     offsets = calibrate_sensor(bus)
@@ -132,6 +144,7 @@ def main():
     try:
         while True:
             status = bus.read_byte_data(DEVICE_ADDRESS, STATUS_REG)
+
             if status & 0x03:
                 # 1. Read Raw
                 raw_ax = read_word_2c(bus, OUTX_L_A) * ACCEL_FACTOR * GRAVITY_MS2
@@ -165,8 +178,7 @@ def main():
                 if abs(gz) < THRESHOLD:
                     gz = 0.0
 
-                print(f"Acc: {ax:>6.2f} {ay:>6.2f} {az:>6.2f} | "
-                      f"Gyr: {gx:>6.2f} {gy:>6.2f} {gz:>6.2f}")
+                print(f"Acc: {ax:>6.2f} {ay:>6.2f} {az:>6.2f} | Gyr: {gx:>6.2f} {gy:>6.2f} {gz:>6.2f}")
 
             time.sleep(0.05)
 

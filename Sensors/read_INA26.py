@@ -1,5 +1,5 @@
 """
-INA226 Voltage/Current Monitor Reader
+INA226 Voltage/Current Monitor Reader (5V 5A)
 Reads bus voltage (V) and current (A) from an INA226 over I2C.
 
 Wiring:
@@ -7,6 +7,8 @@ Wiring:
   - GND -> GND  (Pi pin 6)
   - SDA -> SDA  (Pi pin 7 / GPIO 4)
   - SCL -> SCL  (Pi pin 29 / GPIO 5)
+  - ALERT -> Pi pin 11 / GPIO 11 (optional)
+
   - VS+ -> Battery positive (high side)
   - VS- -> Load side (after shunt)
   - VIN- and VIN+ across the shunt resistor
@@ -18,6 +20,7 @@ import time
 import struct
 import smbus2
 
+
 # --------------- Configuration ---------------
 I2C_BUS     = 3
 INA226_ADDR = 0x40
@@ -27,33 +30,36 @@ INA226_ADDR = 0x40
 SHUNT_RESISTOR_OHMS = 0.01
 
 # INA226 register addresses
-REG_CONFIG      = 0x00
-REG_SHUNT_V     = 0x01
-REG_BUS_V       = 0x02
-REG_POWER       = 0x03
-REG_CURRENT     = 0x04
-REG_CALIBRATION = 0x05
+REG_CONFIG       = 0x00
+REG_SHUNT_V      = 0x01
+REG_BUS_V        = 0x02
+REG_POWER        = 0x03
+REG_CURRENT      = 0x04
+REG_CALIBRATION  = 0x05
 REG_MANUFACTURER = 0xFE
-REG_DIE_ID      = 0xFF
+REG_DIE_ID       = 0xFF
 
 # INA226 LSBs (fixed by hardware)
 BUS_VOLTAGE_LSB   = 1.25e-3   # 1.25 mV per bit
 SHUNT_VOLTAGE_LSB = 2.5e-6    # 2.5 uV per bit
 
-# --------------- Helper Functions ---------------
 
+# --------------- Helper Functions ---------------
 def read_register(bus, addr, reg):
     """Read a 16-bit big-endian register from the INA226."""
+
     data = bus.read_i2c_block_data(addr, reg, 2)
     return struct.unpack(">H", bytes(data))[0]
 
 def read_register_signed(bus, addr, reg):
     """Read a signed 16-bit big-endian register from the INA226."""
+
     data = bus.read_i2c_block_data(addr, reg, 2)
     return struct.unpack(">h", bytes(data))[0]
 
 def write_register(bus, addr, reg, value):
     """Write a 16-bit big-endian value to a register."""
+
     data = struct.pack(">H", value & 0xFFFF)
     bus.write_i2c_block_data(addr, reg, list(data))
 
@@ -68,6 +74,7 @@ def configure_ina226(bus):
       [8:6]   Shunt voltage conversion time — 0b100 = 1.1 ms
       [5:3]   Operating mode — 0b111 = continuous shunt & bus
     """
+
     # Bits [14:12] AVG=16, [11:9] VBUSCT=1.1ms, [8:6] VSHCT=1.1ms, [2:0] MODE=continuous both
     config = (0b010 << 12) | (0b100 << 9) | (0b100 << 6) | 0b111
     write_register(bus, INA226_ADDR, REG_CONFIG, config)
@@ -82,26 +89,30 @@ def configure_ina226(bus):
 
 def read_bus_voltage(bus):
     """Read the bus voltage in volts."""
+
     raw = read_register_signed(bus, INA226_ADDR, REG_BUS_V)
     return raw * BUS_VOLTAGE_LSB
 
 def read_shunt_voltage(bus):
     """Read the shunt voltage in volts."""
+
     raw = read_register_signed(bus, INA226_ADDR, REG_SHUNT_V)
     return raw * SHUNT_VOLTAGE_LSB
 
 def read_current(bus, current_lsb):
     """Read the current in amps using the calibration register."""
+
     raw = read_register_signed(bus, INA226_ADDR, REG_CURRENT)
     return raw * current_lsb
 
 def read_power(bus, current_lsb):
     """Read the power in watts (power LSB = 25 * current_lsb)."""
+
     raw = read_register(bus, INA226_ADDR, REG_POWER)
     return raw * 25 * current_lsb
 
-# --------------- Main ---------------
 
+# --------------- Main ---------------
 def main():
     bus = smbus2.SMBus(I2C_BUS)
 
