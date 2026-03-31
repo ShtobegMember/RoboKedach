@@ -19,6 +19,7 @@ from roboclaw import Roboclaw
 
 def display_help():
     """Print the full control reference to the terminal."""
+
     print("\n" + "=" * 60)
     print("🤖 ROBOT CONTROL INTERFACE")
     print("=" * 60)
@@ -46,6 +47,7 @@ def display_help():
 
 def display_progress(cur1: int, tgt1: int, cur2: int, tgt2: int) -> None:
     """Display movement progress as percentage for both motors on a single line."""
+
     pct1 = 100 if tgt1 == 0 else min(100, abs(cur1) * 100 // abs(tgt1))
     pct2 = 100 if tgt2 == 0 else min(100, abs(cur2) * 100 // abs(tgt2))
     print(f"\r📊 M1: {pct1}% | M2: {pct2}%     ", end="")
@@ -83,6 +85,7 @@ class RobotConfig:
 
 class Direction(Enum):
     """Motor direction values for the RoboClaw."""
+
     STOP = 0
     FORWARD = 1
     BACKWARD = -1
@@ -107,6 +110,7 @@ class MotorController:
 
     def reset_encoders(self) -> bool:
         """Reset both encoder counts to zero."""
+
         return self.rc.ResetEncoders(self.config.address)
 
     def read_encoders(self) -> Tuple[bool, int, int]:
@@ -114,6 +118,7 @@ class MotorController:
         Read raw encoder values from both motors.
         Returns: (success, m1_value, m2_value)
         """
+
         status1, enc1, _ = self.rc.ReadEncM2(self.config.address)
         status2, enc2, _ = self.rc.ReadEncM1(self.config.address)
 
@@ -127,6 +132,7 @@ class MotorController:
         Get current position within a rotation cycle (wrapped to 0..full_rotation).
         Applies direction correction and modular wrapping.
         """
+
         success, enc1_raw, enc2_raw = self.read_encoders()
 
         if not success:
@@ -146,6 +152,7 @@ class MotorController:
         """
         Get raw absolute encoder positions.
         """
+
         success, enc1, enc2 = self.read_encoders()
 
         if not success:
@@ -157,6 +164,7 @@ class MotorController:
         """
         Set a single motor's speed and direction.
         """
+
         if speed is None:
             speed = self.current_speed
 
@@ -183,11 +191,13 @@ class MotorController:
 
     def stop_all(self):
         """Emergency stop — set both motors to zero speed."""
+
         self.rc.ForwardM1(self.config.address, 0)
         self.rc.ForwardM2(self.config.address, 0)
 
     def adjust_speed(self, delta: int):
         """Adjust current speed by delta, clamped to [min_speed, max_speed]."""
+
         self.current_speed = max(
             self.config.min_speed,
             min(self.config.max_speed, self.current_speed + delta)
@@ -201,9 +211,16 @@ class MotorController:
 class MovementController:
     """High-level movement commands using encoder-based distance tracking."""
 
-    def __init__(self, motor_ctrl: MotorController):
+    def __init__(self, motor_ctrl: MotorController, should_abort=None):
         self.motor_ctrl = motor_ctrl
         self.config = motor_ctrl.config
+        self._should_abort = should_abort or self._default_abort
+
+    def _default_abort(self):
+        """Terminal-based abort check (standalone mode)."""
+
+        key = get_key(timeout=self.config.poll_interval)
+        return key == ' '
 
     def drive_distance(self, m1_dir: Direction, m2_dir: Direction, fraction: float = 1.0) -> bool:
         """
@@ -214,6 +231,7 @@ class MovementController:
             fraction: Fraction of full cycle (1.0 = 360°, 0.25 = 90°)
         Returns: True if completed, False if aborted by user (spacebar)
         """
+
         if self.motor_ctrl.current_speed <= 0:
             return False
 
@@ -245,16 +263,15 @@ class MovementController:
         finally:
             self.motor_ctrl.stop_all()
 
-    def _monitor_movement(self, target1: int, target2: int,
-                          dir1: int, dir2: int) -> bool:
+    def _monitor_movement(self, target1: int, target2: int, dir1: int, dir2: int) -> bool:
         """
         Poll encoders in a loop until both motors reach their target positions.
         Pressing spacebar aborts the movement.
         """
+
         while True:
-            # Check for abort (spacebar)
-            key = get_key(timeout=self.config.poll_interval)
-            if key == ' ':
+            # Check for abort (spacebar in standalone, or network abort/heartbeat timeout)
+            if self._should_abort():
                 print("\n⚠️  ABORTED")
                 return False
 
@@ -293,6 +310,7 @@ def get_key(timeout: Optional[float] = None) -> Optional[str]:
     Handles multi-byte ANSI escape sequences (arrow keys, shift+arrow, etc.).
     Returns None on timeout.
     """
+
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
 
@@ -354,6 +372,7 @@ class RobotInterface:
         Print current robot status (encoders, speed, distance).
         Can be monkey-patched by main.py to add IMU/position data.
         """
+
         try:
             abs1, abs2 = self.motor_ctrl.get_absolute_positions()
             print("\n--- ROBOT STATUS ---")
@@ -370,12 +389,14 @@ class RobotInterface:
         Generate the idle-loop status line text.
         Can be monkey-patched by main.py for custom telemetry.
         """
+
         return (f"⚡ Speed: {self.motor_ctrl.current_speed} | "
                 f"Length: {self.step * self.STEP_SIZE:.1f} | "
                 f"Ready... ")
 
     def handle_command(self, key: str):
         """Dispatch a keyboard command to the appropriate action."""
+
         m = self.movement_ctrl
         d = Direction
 
@@ -418,6 +439,7 @@ class RobotInterface:
 
     def run(self):
         """Main control loop — blocks until user presses 'q'."""
+        
         display_help()
 
         try:

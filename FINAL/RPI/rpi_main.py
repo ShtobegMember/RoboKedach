@@ -19,7 +19,6 @@ import multiprocessing
 import queue
 
 from camera_server import run_server
-import robot_controller
 from robot_controller import RobotConfig, MotorController, MovementController, Direction
 
 
@@ -47,6 +46,8 @@ CYCLONEDDS_CFG = (
     '<AllowMulticast>spdp</AllowMulticast>'
     '</General></Domain></CycloneDDS>'
 )
+
+MOVEMENT_CMDS = {"FWD", "BWD", "LEFT", "RIGHT", "FWD90", "BWD90", "LEFT90", "RIGHT90"}
 
 
 # ========================== INA226 Helpers ==========================
@@ -125,7 +126,7 @@ def camera_process():
 def lidar_process():
     """Launch the ROS2 LIDAR+IMU node via ros2 launch."""
 
-    time.sleep(2)  # Cooldown before (re)start — let USB/I2C devices fully release
+    time.sleep(3)  # Cooldown before (re)start — let USB/I2C devices fully release
 
     subprocess.run(["bash", "-c",
         "export ROS_DOMAIN_ID=1 && "
@@ -137,40 +138,64 @@ def lidar_process():
     ])
 
 
+# ========================== Motor Shared State ==========================
+class MotorSharedState:
+    """Cross-thread state shared between socket_reader and the motor command loop."""
+
+    HEARTBEAT_TIMEOUT = 2.0  # Seconds without a heartbeat before aborting movement
+
+    def __init__(self):
+        self.abort = threading.Event()
+        self.disconnect = threading.Event()
+        self.continue_move = threading.Event()
+        self.continue_cmd = None
+        self.last_heartbeat = 0.0
+
+    def reset(self):
+        """Reset all flags for a new PC connection."""
+
+        self.abort.clear()
+        self.disconnect.clear()
+        self.continue_move.clear()
+        self.continue_cmd = None
+        self.last_heartbeat = time.time()
+
+
 # ========================== Motor Process ==========================
 def motor_process(port, slam_event):
     """
     Motor engine: TCP server receiving movement commands from the PC.
-    Monkey-patches get_key so drive_distance() abort works over the network
-    instead of reading from stdin.
+    Injects a should_abort callback into MovementController so drive_distance()
+    aborts on: manual ABORT command, PC disconnect, or heartbeat timeout (2s).
     """
 
-    # Abort mechanism — replaces terminal-based get_key()
-    abort_event = threading.Event()
-
-    def network_get_key(timeout=None):
-        """Drop-in replacement for robot_controller.get_key."""
-        if abort_event.is_set():
-            abort_event.clear()
-            return ' '  # Spacebar = abort in _monitor_movement
-        if timeout:
-            time.sleep(timeout)
-        return None
-
-    robot_controller.get_key = network_get_key
+    state = MotorSharedState()
 
     # Initialize motor hardware with retry
+    config = RobotConfig()
     motor_ctrl = None
-    move_ctrl = None
     while motor_ctrl is None:
         try:
-            config = RobotConfig()
             motor_ctrl = MotorController(config)
-            move_ctrl = MovementController(motor_ctrl)
             print("MOTOR: Hardware initialized.")
         except ConnectionError as e:
             print(f"MOTOR: {e}. Retrying in 3s...")
             time.sleep(3)
+
+    def should_abort():
+        """Abort check for networked control: manual abort, disconnect, or heartbeat timeout."""
+
+        if state.abort.is_set():
+            state.abort.clear()
+            return True
+        if state.disconnect.is_set():
+            return True
+        if time.time() - state.last_heartbeat > state.HEARTBEAT_TIMEOUT:
+            return True
+        time.sleep(config.poll_interval)
+        return False
+
+    move_ctrl = MovementController(motor_ctrl, should_abort=should_abort)
 
     cmd_queue = queue.Queue()
 
@@ -188,11 +213,23 @@ def motor_process(port, slam_event):
                     line, buf = buf.split('\n', 1)
                     cmd = line.strip()
                     if cmd == "ABORT":
-                        abort_event.set()
+                        state.abort.set()
+                        state.continue_move.clear()
+                        state.continue_cmd = None
+                    elif cmd == "HEARTBEAT":
+                        state.last_heartbeat = time.time()
+                    elif cmd == "STOP_MOVE":
+                        state.continue_move.clear()
+                        state.continue_cmd = None
                     elif cmd:
+                        if cmd in MOVEMENT_CMDS:
+                            state.continue_move.set()
+                            state.continue_cmd = cmd
                         cmd_queue.put(cmd)
         except Exception:
             pass
+        finally:
+            state.disconnect.set()
 
     # TCP server
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -210,6 +247,7 @@ def motor_process(port, slam_event):
                 continue
 
             print(f"MOTOR: PC connected from {addr}")
+            state.reset()
 
             reader = threading.Thread(target=socket_reader, args=(conn,), daemon=True)
             reader.start()
@@ -228,40 +266,25 @@ def motor_process(port, slam_event):
 
                     d = Direction
                     try:
-                        moved = False
+                        m1_dir = m2_dir = None
+                        fraction = 1.0
 
                         if cmd == "FWD":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.FORWARD)
-                            moved = True
+                            m1_dir, m2_dir = d.FORWARD, d.FORWARD
                         elif cmd == "BWD":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.BACKWARD, d.BACKWARD)
-                            moved = True
+                            m1_dir, m2_dir = d.BACKWARD, d.BACKWARD
                         elif cmd == "LEFT":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.STOP, d.FORWARD)
-                            moved = True
+                            m1_dir, m2_dir = d.STOP, d.FORWARD
                         elif cmd == "RIGHT":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.STOP)
-                            moved = True
+                            m1_dir, m2_dir = d.FORWARD, d.STOP
                         elif cmd == "FWD90":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.FORWARD, 0.25)
-                            moved = True
+                            m1_dir, m2_dir, fraction = d.FORWARD, d.FORWARD, 0.25
                         elif cmd == "BWD90":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.BACKWARD, d.BACKWARD, 0.25)
-                            moved = True
+                            m1_dir, m2_dir, fraction = d.BACKWARD, d.BACKWARD, 0.25
                         elif cmd == "LEFT90":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.STOP, d.FORWARD, 0.25)
-                            moved = True
+                            m1_dir, m2_dir, fraction = d.STOP, d.FORWARD, 0.25
                         elif cmd == "RIGHT90":
-                            conn.sendall(b"BUSY\n")
-                            move_ctrl.drive_distance(d.FORWARD, d.STOP, 0.25)
-                            moved = True
+                            m1_dir, m2_dir, fraction = d.FORWARD, d.STOP, 0.25
                         elif cmd == "SPEED_UP":
                             motor_ctrl.adjust_speed(config.speed_increment)
                         elif cmd == "SPEED_DOWN":
@@ -271,8 +294,17 @@ def motor_process(port, slam_event):
                         elif cmd == "START_SLAM":
                             slam_event.set()
 
-                        # Drain stale movement commands after a blocking move
-                        if moved:
+                        if m1_dir is not None:
+                            conn.sendall(b"BUSY\n")
+                            completed = move_ctrl.drive_distance(m1_dir, m2_dir, fraction)
+
+                            # Continue while key is held on PC
+                            while (completed
+                                   and state.continue_move.is_set()
+                                   and state.continue_cmd == cmd):
+                                completed = move_ctrl.drive_distance(m1_dir, m2_dir, fraction)
+
+                            # Drain stale commands queued during movement
                             while not cmd_queue.empty():
                                 try:
                                     cmd_queue.get_nowait()
@@ -292,7 +324,8 @@ def motor_process(port, slam_event):
                 pass
 
             motor_ctrl.stop_all()
-            abort_event.clear()
+            state.abort.clear()
+
             # Drain leftover commands
             while not cmd_queue.empty():
                 try:

@@ -486,7 +486,6 @@ class HUDWindow(QMainWindow):
         self._slam_started = False
 
         # Continuous movement state
-        self._held_move_cmd = None   # Command string for the currently held key
         self._held_key_code = None   # Qt key code of the held movement key
 
         # Camera background
@@ -538,7 +537,6 @@ class HUDWindow(QMainWindow):
         self.motor_worker = MotorCommandWorker(RPI_IP, MOTOR_PORT)
         self.motor_worker.status_update.connect(self._on_motor_status)
         self.motor_worker.speed_update.connect(self._on_motor_speed)
-        self.motor_worker.motor_ready.connect(self._on_motor_ready)
         self.motor_worker.start()
 
         # VM (voltage monitor) server worker
@@ -551,6 +549,11 @@ class HUDWindow(QMainWindow):
         self.vm_timer = QTimer(self)
         self.vm_timer.timeout.connect(self.overlay.update)
         self.vm_timer.start(500)
+
+        # Heartbeat timer — RPi watchdog stops motors if this stops arriving
+        self.heartbeat_timer = QTimer(self)
+        self.heartbeat_timer.timeout.connect(lambda: self.motor_worker.send_command("HEARTBEAT"))
+        self.heartbeat_timer.start(500)
 
         # SLAM worker (auto-launches RViz2 + Cartographer)
         self.slam_worker = SLAMWorker()
@@ -605,28 +608,26 @@ class HUDWindow(QMainWindow):
         elif key == Qt.Key.Key_Space:
             cmd = "ABORT"
             # Abort cancels continuous movement
-            self._held_move_cmd = None
             self._held_key_code = None
         elif key == Qt.Key.Key_R:
             cmd = "RESET_ENC"
 
         if cmd:
             if is_movement:
-                self._held_move_cmd = cmd
                 self._held_key_code = key
             self.motor_worker.send_command(cmd)
         else:
             super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        """Clear held movement state when the movement key is released."""
+        """Clear held movement state and tell RPi to stop after current rotation."""
 
         if event.isAutoRepeat():
             return
 
         if event.key() == self._held_key_code:
-            self._held_move_cmd = None
             self._held_key_code = None
+            self.motor_worker.send_command("STOP_MOVE")
 
     # --- Slots ---
     def _on_frame(self, image):
@@ -649,12 +650,6 @@ class HUDWindow(QMainWindow):
     def _on_motor_speed(self, speed):
         self.motor_speed = speed
         self.overlay.update()
-
-    def _on_motor_ready(self):
-        """When RPi finishes a rotation and is ready, re-send if key still held."""
-
-        if self._held_move_cmd:
-            self.motor_worker.send_command(self._held_move_cmd)
 
     def _on_slam_status(self, msg):
         self.slam_status = msg
@@ -695,6 +690,7 @@ class HUDWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.vm_timer.stop()
+        self.heartbeat_timer.stop()
         self.cam_worker.stop()
         self.motor_worker.stop()
         self.slam_worker.stop()
