@@ -53,10 +53,9 @@ def open_camera():
     Uses MJPG pixel format at 640x480 to avoid 'select() timeout' errors.
     """
 
-    idx = 0
-
-    # Open with V4L2 backend explicitly
-    cam = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+    # Open by device path — avoids index-to-device mismatches
+    # when the camera exposes multiple /dev/video* nodes
+    cam = cv2.VideoCapture('/dev/video0', cv2.CAP_V4L2)
 
     if not cam.isOpened():
         return None
@@ -105,7 +104,10 @@ def camera_reader_worker():
                 time.sleep(2)  # Wait before retrying
                 continue
 
-        success, frame = camera.read()
+        try:
+            success, frame = camera.read()
+        except cv2.error:
+            success = False
 
         if not success:
             # Read timeout — driver may be stuck, force reconnect
@@ -175,6 +177,7 @@ def run_server():
 
     # Reset hardware once on startup to clear any stale driver state
     reset_camera_hardware()
+    time.sleep(1)  # Let V4L2 driver fully release before OpenCV opens it
 
     # Dedicated reader thread — owns the camera exclusively
     reader_thread = threading.Thread(target=camera_reader_worker)
