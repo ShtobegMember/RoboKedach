@@ -104,7 +104,7 @@ def vm_streamer(server_ip, port):
                         s.sendall(struct.pack('<2f', voltage, current))
                     except OSError as e:
                         print(f"VM: I2C read error: {e}")
-                    time.sleep(0.05)
+                    time.sleep(0.1)
 
         except ConnectionRefusedError:
             print("VM: PC not ready. Retrying in 3s...")

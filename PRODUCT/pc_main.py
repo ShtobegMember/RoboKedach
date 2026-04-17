@@ -461,6 +461,35 @@ class HUDOverlay(QLabel):
         title_font = QFont("Consolas", 11, QFont.Weight.Bold)
         status_font = QFont("Consolas", 9)
 
+        # --- Crosshair (center of screen) ---
+        cx, cy = w // 2, h // 2
+        solid_len = 22    # solid segment length from center
+        gap       = 7     # gap around center point
+        edge_margin = 30  # stop this many px from the screen edge
+
+        solid_pen = QPen(QColor(0, 255, 0, 240), 3.5)
+        solid_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+        dot_pen = QPen(QColor(0, 255, 0, 170), 2.5)
+        dot_pen.setStyle(Qt.PenStyle.CustomDashLine)
+        dot_pen.setDashPattern([8, 6])   # 8px dash, 6px gap
+        dot_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+
+        # Solid arms
+        p.setPen(solid_pen)
+        p.drawLine(cx - solid_len - gap, cy, cx - gap, cy)   # left solid
+        p.drawLine(cx + gap, cy, cx + solid_len + gap, cy)   # right solid
+        p.drawLine(cx, cy - solid_len - gap, cx, cy - gap)   # top solid
+        p.drawLine(cx, cy + gap, cx, cy + solid_len + gap)   # bottom solid
+
+        # Edge tick marks — short lines at each screen edge aligned with crosshair
+        tick = 18          # tick length in px
+        margin = 20        # distance from screen edge
+        p.drawLine(margin, cy, margin + tick, cy)              # left edge
+        p.drawLine(w - margin - tick, cy, w - margin, cy)     # right edge
+        p.drawLine(cx, margin, cx, margin + tick)              # top edge
+        p.drawLine(cx, h - 4*margin - tick, cx, h - 4*margin)     # bottom edge
+
         # --- Power Monitor Panel (top-left) ---
         pm_y = 10
         p.setBrush(panel_bg)
@@ -477,26 +506,62 @@ class HUDOverlay(QLabel):
         p.drawText(28, pm_y + 50, f"{vm['voltage']:7.3f} V")
         p.drawText(28, pm_y + 70, f"{vm['current']:7.3f} A")
 
-        # Voltage color indicator
+        # Voltage battery indicator
         v = vm['voltage']
         if v > 0:
-            if v >= 11.1:
-                v_color = green         # Healthy (3.7V+ per cell)
-            elif v >= 10.2:
-                v_color = yellow        # Low warning (3.4V per cell)
-            else:
-                v_color = QColor(255, 50, 50, 220)  # Critical (<3.4V per cell)
+            bx = 175
+            by = pm_y + 22
+            bw = 26
+            bh = 42
+            cap_w = 10
+            cap_h = 4
 
+            # Outline and cap
+            p.setPen(QPen(white, 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(bx, by, bw, bh, 2, 2)
+            p.setBrush(white)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(v_color)
-            p.drawRect(190, pm_y + 38, 12, 12)
-            p.setBrush(panel_bg)
+            p.drawRect(bx + (bw - cap_w) // 2, by - cap_h, cap_w, cap_h)
+
+            if v > 11.7:
+                level = 4
+                bat_color = QColor(0, 255, 0, 220)       # Pure Green
+            elif v > 11.2:
+                level = 3
+                bat_color = QColor(255, 255, 0, 220)     # Pure Yellow
+            elif v > 10.8:
+                level = 2
+                bat_color = QColor(255, 165, 0, 220)     # Orange
+            elif v > 10.5:
+                level = 1
+                bat_color = QColor(255, 0, 0, 220)       # Pure Red
+            else:
+                level = 0
+                bat_color = QColor(255, 0, 0, 220)       # Pure Red
+
+            if level > 0:
+                pad = 2
+                seg_gap = 2
+                seg_h = (bh - 2 * pad - 3 * seg_gap) // 4
+                seg_w = bw - 2 * pad
+                p.setBrush(bat_color)
+                for i in range(level):
+                    seg_x = bx + pad
+                    seg_y = by + bh - pad - (i + 1) * seg_h - i * seg_gap
+                    p.drawRect(seg_x, seg_y, int(seg_w), int(seg_h))
+
+        p.setBrush(panel_bg)
+
+        # Layout constants for status bar
+        sb_h = 50
+        sb_y = h - sb_h - 10
 
         # --- Differential Speed Panel (bottom-left, above status bar) ---
-        sp_w = 160
-        sp_h = 200
+        sp_w = 140
+        sp_h = 120
         sp_x = 10
-        sp_y = h - 40 - 10 - sp_h  # 10px gap above status bar
+        sp_y = sb_y - 10 - sp_h  # 10px gap above status bar
         p.setBrush(panel_bg)
         p.setPen(border)
         p.drawRoundedRect(sp_x, sp_y, sp_w, sp_h, 8, 8)
@@ -506,20 +571,20 @@ class HUDOverlay(QLabel):
         p.drawText(sp_x + 12, sp_y + 22, "SPEED")
 
         # Bar track geometry
-        bar_w = 18
-        bar_top = sp_y + 40
-        bar_bottom = sp_y + sp_h - 38
+        bar_w = 14
+        bar_top = sp_y + 35
+        bar_bottom = sp_y + sp_h - 26
         bar_h = bar_bottom - bar_top
 
         # Three evenly-spaced columns (left=L, middle=avg, right=R)
-        col_centers = [sp_x + 32, sp_x + 80, sp_x + 128]
+        col_centers = [sp_x + 28, sp_x + 66, sp_x + 104]
 
         # Range labels (top=127, bottom=10)
         range_font = QFont("Consolas", 8)
         p.setFont(range_font)
         p.setPen(white)
-        p.drawText(sp_x + sp_w - 30, bar_top + 6, "127")
-        p.drawText(sp_x + sp_w - 30, bar_bottom + 4, "10")
+        p.drawText(sp_x + sp_w - 25, bar_top + 6, "127")
+        p.drawText(sp_x + sp_w - 20, bar_bottom + 4, "10")
 
         # Slot values and colors
         lo, hi = self.hud.SPEED_MIN, self.hud.SPEED_MAX
@@ -555,22 +620,45 @@ class HUDOverlay(QLabel):
             # Numeric value below bar
             p.setPen(white)
             p.setFont(range_font)
-            p.drawText(cx - 10, bar_bottom + 18, f"{val:>3d}")
+            p.drawText(cx - 10, bar_bottom + 16, f"{val:>3d}")
 
         p.setBrush(panel_bg)
 
         # --- Status Bar (bottom) ---
         p.setBrush(QColor(0, 0, 0, 160))
         p.setPen(border)
-        p.drawRoundedRect(10, h - 40, w - 20, 30, 5, 5)
+        p.drawRoundedRect(10, sb_y, w - 20, sb_h, 5, 5)
 
         p.setFont(status_font)
         p.setPen(green)
-        p.drawText(20, h - 20,
-                   f"CAM: {self.hud.camera_status}  |  {self.hud.motor_status}"
-                   f"  L:{self.hud.motor_left_speed} R:{self.hud.motor_right_speed}/127"
-                   f"  |  {self.hud.heading_status}"
-                   f"  |  {self.hud.slam_status}")
+
+        # Derive simplified status strings
+        cam_raw = self.hud.camera_status.lower()
+        cam_st = "Connected" if "connected" in cam_raw else "Disconnected"
+
+        vm_raw = getattr(self.hud, 'vm_status', '')
+        vm_st = "Connected" if "connected" in vm_raw.lower() else "Disconnected"
+
+        motor_st = "Connected" if "connected" in self.hud.motor_status.lower() else "Disconnected"
+
+        bold_font   = QFont("Consolas", 9, QFont.Weight.Bold)
+        normal_font = QFont("Consolas", 9)
+        label_gap   = 55   # pixels to skip past the bold label
+
+        # Row 1 — BASE:
+        p.setFont(bold_font)
+        p.drawText(20, sb_y + 20, "BASE:")
+        p.setFont(normal_font)
+        p.drawText(20 + label_gap, sb_y + 20,
+                   f"COMM: OK  |  {self.hud.heading_status}  |  {self.hud.slam_status}")
+
+        # Row 2 — ROBOT:
+        p.setFont(bold_font)
+        p.drawText(20, sb_y + 40, "ROBOT:")
+        p.setFont(normal_font)
+        p.drawText(20 + label_gap, sb_y + 40,
+                   f"VM: {vm_st}  |  CAMERA: {cam_st}  |  MOTORS: {motor_st}")
+
 
         p.end()
 
@@ -617,6 +705,40 @@ class HUDWindow(QMainWindow):
         # HUD overlay (paints on top of the camera)
         self.overlay = HUDOverlay(self)
         self.overlay.raise_()
+
+        # Feedback popup label
+        self.popup_label = QLabel(self)
+        self.popup_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.popup_label.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 180);"
+            "color: #00ff00;"
+            "border: 2px solid #00ff00;"
+            "border-radius: 10px;"
+            "font-family: Consolas;"
+            "font-size: 28px;"
+            "font-weight: bold;"
+            "padding: 15px 30px;"
+        )
+        self.popup_label.hide()
+
+        self.popup_timer = QTimer(self)
+        self.popup_timer.setSingleShot(True)
+        self.popup_timer.timeout.connect(self.popup_label.hide)
+
+        # Persistent low battery warning label
+        self.bat_warn_label = QLabel("⚠  LOW BATTERY", self)
+        self.bat_warn_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bat_warn_label.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 180);"
+            "color: #ffff00;"
+            "border: 2px solid #ffff00;"
+            "border-radius: 10px;"
+            "font-family: Consolas;"
+            "font-size: 28px;"
+            "font-weight: bold;"
+            "padding: 15px 30px;"
+        )
+        self.bat_warn_label.hide()
 
         # Shared button style
         btn_style = (
@@ -684,7 +806,7 @@ class HUDWindow(QMainWindow):
         # Periodic repaint for VM panel (ensures updates even when IMU/camera are idle)
         self.vm_timer = QTimer(self)
         self.vm_timer.timeout.connect(self.overlay.update)
-        self.vm_timer.start(50)
+        self.vm_timer.start(100)
 
         # Heartbeat timer — RPi watchdog stops motors if this stops arriving
         self.heartbeat_timer = QTimer(self)
@@ -780,6 +902,7 @@ class HUDWindow(QMainWindow):
             self._held_key_code = None
         elif key == Qt.Key.Key_R:
             cmd = "RESET_ENC"
+            self.show_popup("ENCODERS RESET")
 
         if cmd:
             if is_movement:
@@ -797,6 +920,16 @@ class HUDWindow(QMainWindow):
         if event.key() == self._held_key_code:
             self._held_key_code = None
             self.motor_worker.send_command("STOP_MOVE")
+
+    def show_popup(self, text):
+        """Display a temporary centered floating feedback message."""
+        self.popup_label.setText(text)
+        self.popup_label.adjustSize()
+        pw, ph = self.popup_label.width(), self.popup_label.height()
+        self.popup_label.setGeometry((self.width() - pw) // 2, (self.height() - ph) // 2, pw, ph)
+        self.popup_label.show()
+        self.popup_label.raise_()
+        self.popup_timer.start(1500)
 
     # --- Slots ---
     def _on_frame(self, image):
@@ -828,6 +961,18 @@ class HUDWindow(QMainWindow):
     def _on_vm_data(self, voltage, current):
         self.vm_data = {'voltage': voltage, 'current': current}
         self.overlay.update()
+        # Show/hide persistent low battery warning (orange = <=10.8V)
+        if voltage > 0 and voltage <= 10.8:
+            if not self.bat_warn_label.isVisible():
+                self.bat_warn_label.adjustSize()
+                pw, ph = self.bat_warn_label.width(), self.bat_warn_label.height()
+                self.bat_warn_label.setGeometry(
+                    (self.width() - pw) // 2, (self.height() - ph) // 2, pw, ph
+                )
+                self.bat_warn_label.show()
+                self.bat_warn_label.raise_()
+        else:
+            self.bat_warn_label.hide()
 
     def _on_vm_status(self, msg):
         self.vm_status = msg
