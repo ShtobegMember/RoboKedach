@@ -122,13 +122,6 @@ def camera_reader_worker():
             # Flip 180° (camera is mounted upside-down)
             frame = cv2.flip(frame, -1)
 
-            # # Draw crosshair overlay at center
-            # h, w, _ = frame.shape
-            # cx, cy = w // 2, h // 2
-            # cv2.line(frame, (cx - 20, cy), (cx + 20, cy), (0, 255, 0), 2)
-            # cv2.line(frame, (cx, cy - 20), (cx, cy + 20), (0, 255, 0), 2)
-            # cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
-
             # Encode to JPEG and update the shared buffer
             ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if ret:

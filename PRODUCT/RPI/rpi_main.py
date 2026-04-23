@@ -344,6 +344,13 @@ def motor_process(port, slam_event, heading_cmd_queue, heading_result_queue):
                                    and state.continue_cmd == cmd):
                                 completed = move_ctrl.drive_distance(m1_dir, m2_dir, fraction)
 
+                            # Send encoder positions so PC can track leg phases
+                            try:
+                                enc1, enc2 = motor_ctrl.get_absolute_positions()
+                                conn.sendall(f"ENC:{enc1},{enc2}\n".encode())
+                            except IOError:
+                                pass
+
                             # Drain stale commands queued during movement
                             while not cmd_queue.empty():
                                 try:

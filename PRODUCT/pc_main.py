@@ -6,11 +6,14 @@ buttons: Start SLAM (sends START_SLAM to Pi to launch LIDAR/IMU) and Record Bag
 (toggles timestamped rosbag recording with graceful SIGINT stop).
 """
 
+import os
+import ctypes
 import sys
 import math
 import time
 from datetime import datetime
 
+import paramiko
 import socket
 import struct
 import subprocess
@@ -18,16 +21,20 @@ import threading
 import urllib.request
 
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, Qt
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QFont, QColor, QPen
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QFont, QColor, QPen, QIcon
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton
 
 
 # ========================== Configuration ==========================
-RPI_IP     = "192.168.1.2"
-CAMERA_URL = f"http://{RPI_IP}:5000/"
+# Raspberry Pi SSH credentials
+RPI_IP       = "192.168.1.2"
+RPI_SSH_HOST = "ood"
+RPI_SSH_USER = "foo"
+RPI_SSH_PASS = " "
 
 MOTOR_PORT = 65433
 VM_PORT    = 65434
+CAMERA_URL = f"http://{RPI_IP}:5000/"
 
 WSL_DISTRO = "Ubuntu-24.04"
 WSL_PATH   = "~/cartographer_ws"
@@ -175,7 +182,9 @@ class MotorCommandWorker(QThread):
     """TCP client that sends motor commands to and receives status from the RPi."""
 
     status_update = pyqtSignal(str)
+    connection_update = pyqtSignal(bool)
     speed_update = pyqtSignal(int, int)
+    encoder_update = pyqtSignal(int, int)
     motor_ready = pyqtSignal()
     heading_calibrated = pyqtSignal()
     heading_received = pyqtSignal(float)
@@ -191,7 +200,6 @@ class MotorCommandWorker(QThread):
     def run(self):
         while self.is_running:
             try:
-                self.status_update.emit("Motor: Connecting...")
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 sock.settimeout(5)
@@ -202,6 +210,7 @@ class MotorCommandWorker(QThread):
                     self._sock = sock
 
                 self.status_update.emit("Motor: Connected")
+                self.connection_update.emit(True)
 
                 buf = ""
                 while self.is_running:
@@ -224,6 +233,12 @@ class MotorCommandWorker(QThread):
                             elif msg == "READY":
                                 self.status_update.emit("Motor: Ready")
                                 self.motor_ready.emit()
+                            elif msg.startswith("ENC:"):
+                                try:
+                                    left_enc, right_enc = msg[4:].split(",", 1)
+                                    self.encoder_update.emit(int(left_enc), int(right_enc))
+                                except ValueError:
+                                    pass
                             elif msg == "HEADING_CALIBRATED":
                                 self.heading_calibrated.emit()
                             elif msg.startswith("HEADING:"):
@@ -244,6 +259,7 @@ class MotorCommandWorker(QThread):
             except Exception as e:
                 self.status_update.emit(f"Motor: {e}")
 
+            self.connection_update.emit(False)
             with self._lock:
                 self._sock = None
             if self.is_running:
@@ -290,8 +306,7 @@ class SLAMWorker(QThread):
         self._heading_deg = None  # Set before launching SLAM core
 
     def _build_wsl_cmd(self, command):
-        return ["wsl", "-d", WSL_DISTRO, "--cd", WSL_PATH, "bash", "-ic",
-                WSL_ROS_PREAMBLE + command]
+        return ["wsl", "-d", WSL_DISTRO, "--cd", WSL_PATH, "bash", "-ic", WSL_ROS_PREAMBLE + command]
 
     def publish_north_tf(self, heading_deg):
         """Dynamically launch the static TF publisher once heading is known."""
@@ -306,7 +321,8 @@ class SLAMWorker(QThread):
                 self.status_update.emit(f"SLAM: Launching {name}...")
                 proc = subprocess.Popen(
                     self._build_wsl_cmd(cmd),
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=0x08000000
                 )
                 self._core_procs[name] = proc
         except (OSError, FileNotFoundError) as e:
@@ -434,6 +450,68 @@ class SLAMWorker(QThread):
         self.quit()
 
 
+
+# ========================== RPi Remote Worker ==========================
+class RPiRemoteWorker(QThread):
+    """SSH into the RPi and run rpi_main.py. Streams output to console."""
+
+    status_update = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.is_running = True
+        self._ssh = None
+
+    def run(self):
+        while self.is_running:
+            try:
+                self.status_update.emit("RPi: Connecting via SSH...")
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname=RPI_SSH_HOST, username=RPI_SSH_USER,
+                            password=RPI_SSH_PASS, timeout=10)
+                self._ssh = ssh
+                self.status_update.emit("RPi: SSH connected. Launching rpi_main.py...")
+
+                stdin, stdout, stderr = ssh.exec_command(
+                    "cd Desktop/PRODUCT && python3 rpi_main.py",
+                    get_pty=True
+                )
+
+                # Stream stdout until the remote process exits or we're told to stop
+                for line in iter(stdout.readline, ""):
+                    if not self.is_running:
+                        break
+                    stripped = line.rstrip()
+                    if stripped:
+                        print(f"[RPi] {stripped}")
+
+                exit_code = stdout.channel.recv_exit_status()
+                self.status_update.emit(f"RPi: rpi_main.py exited with code {exit_code}")
+
+            except Exception as e:
+                self.status_update.emit(f"RPi SSH: {e}")
+            finally:
+                if self._ssh:
+                    try:
+                        self._ssh.close()
+                    except Exception:
+                        pass
+                    self._ssh = None
+
+            if self.is_running:
+                time.sleep(5)  # retry after a delay
+
+    def stop(self):
+        self.is_running = False
+        if self._ssh:
+            try:
+                self._ssh.close()
+            except Exception:
+                pass
+        self.quit()
+
+
 # ========================== HUD Overlay ==========================
 class HUDOverlay(QLabel):
     """Transparent widget that paints motor status over the camera feed."""
@@ -445,6 +523,24 @@ class HUDOverlay(QLabel):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet("background: transparent;")
 
+    def _draw_leg_box(self, p, x, y, sz, active, green, white, panel_bg):
+        """Draw a single leg indicator box with a down-arrow."""
+
+        color = green if active else white
+        p.setPen(QPen(color, 1.5))
+        p.setBrush(panel_bg)
+        p.drawRoundedRect(x, y, sz, sz, 3, 3)
+
+        # Draw down arrow inside the box
+        cx = x + sz // 2
+        top_y = y + 5
+        bot_y = y + sz - 5
+
+        p.setPen(QPen(color, 2))
+        p.drawLine(cx, top_y, cx, bot_y)            # shaft
+        p.drawLine(cx, bot_y, cx - 4, bot_y - 5)    # left head
+        p.drawLine(cx, bot_y, cx + 4, bot_y - 5)    # right head
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -455,7 +551,9 @@ class HUDOverlay(QLabel):
         panel_bg = QColor(0, 0, 0, 140)
         green = QColor(0, 255, 0, 220)
         white = QColor(255, 255, 255, 240)
-        yellow = QColor(255, 220, 0, 220)
+        yellow = QColor(255, 255, 0, 220)
+        orange = QColor(255, 165, 0, 220)
+        red = QColor(255, 0, 0, 220)
         border = QPen(green, 1)
 
         title_font = QFont("Consolas", 11, QFont.Weight.Bold)
@@ -465,7 +563,6 @@ class HUDOverlay(QLabel):
         cx, cy = w // 2, h // 2
         solid_len = 22    # solid segment length from center
         gap       = 7     # gap around center point
-        edge_margin = 30  # stop this many px from the screen edge
 
         solid_pen = QPen(QColor(0, 255, 0, 240), 3.5)
         solid_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -494,22 +591,22 @@ class HUDOverlay(QLabel):
         pm_y = 10
         p.setBrush(panel_bg)
         p.setPen(border)
-        p.drawRoundedRect(10, pm_y, 220, 80, 8, 8)
+        p.drawRoundedRect(10, pm_y, 190, 80, 8, 8)
 
         p.setFont(title_font)
         p.setPen(green)
         p.drawText(22, pm_y + 24, "POWER MONITOR")
 
-        p.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
+        p.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         vm = self.hud.vm_data
         p.setPen(white)
-        p.drawText(28, pm_y + 50, f"{vm['voltage']:7.3f} V")
-        p.drawText(28, pm_y + 70, f"{vm['current']:7.3f} A")
+        p.drawText(22, pm_y + 50, f"{vm['voltage']:6.2f} V")
+        p.drawText(22, pm_y + 70, f"{vm['current']:6.2f} A")
 
         # Voltage battery indicator
         v = vm['voltage']
         if v > 0:
-            bx = 175
+            bx = 150
             by = pm_y + 22
             bw = 26
             bh = 42
@@ -526,19 +623,19 @@ class HUDOverlay(QLabel):
 
             if v > 11.7:
                 level = 4
-                bat_color = QColor(0, 255, 0, 220)       # Pure Green
+                bat_color = green
             elif v > 11.2:
                 level = 3
-                bat_color = QColor(255, 255, 0, 220)     # Pure Yellow
+                bat_color = yellow
             elif v > 10.8:
                 level = 2
-                bat_color = QColor(255, 165, 0, 220)     # Orange
+                bat_color = orange
             elif v > 10.5:
                 level = 1
-                bat_color = QColor(255, 0, 0, 220)       # Pure Red
+                bat_color = red
             else:
                 level = 0
-                bat_color = QColor(255, 0, 0, 220)       # Pure Red
+                bat_color = red
 
             if level > 0:
                 pad = 2
@@ -624,6 +721,91 @@ class HUDOverlay(QLabel):
 
         p.setBrush(panel_bg)
 
+        # --- Robot Legs Panel (bottom-right, above status bar) ---
+        lp_w = 140
+        lp_h = 180
+        lp_x = w - lp_w - 10
+        lp_y = sb_y - 10 - lp_h
+
+        p.setBrush(panel_bg)
+        p.setPen(border)
+        p.drawRoundedRect(lp_x, lp_y, lp_w, lp_h, 8, 8)
+
+        p.setFont(title_font)
+        p.setPen(green)
+        p.drawText(lp_x + 12, lp_y + 22, "LEGS STATUS")
+
+        # Robot body illustration (centered in panel)
+        body_w = 36
+        body_h = 120
+        body_x = lp_x + (lp_w - body_w) // 2
+        body_y = lp_y + 42
+
+        p.setPen(QPen(white, 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(body_x, body_y, body_w, body_h, 6, 6)
+
+        # Camera nub on top
+        nub_w = 16
+        nub_h = 6
+        p.setBrush(white)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(body_x + (body_w - nub_w) // 2, body_y - nub_h, nub_w, nub_h)
+
+        # Forward arrow inside body
+        arr_cx = body_x + body_w // 2
+        arr_cy = body_y + 22
+        p.setPen(QPen(white, 2))
+        p.drawLine(arr_cx, arr_cy + 14, arr_cx, arr_cy - 8)           # shaft
+        p.drawLine(arr_cx, arr_cy - 8, arr_cx - 6, arr_cy - 1)       # left head
+        p.drawLine(arr_cx, arr_cy - 8, arr_cx + 6, arr_cy - 1)       # right head
+
+        # Camera lens (small square + circle) inside body
+        lens_y = arr_cy + 22
+        lens_sz = 16
+        p.setPen(QPen(white, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(arr_cx - lens_sz // 2, lens_y, lens_sz, lens_sz, 2, 2)
+        p.drawEllipse(arr_cx - 5, lens_y + 3, 10, 10)
+
+        # Cable dot at bottom
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(white)
+        p.drawEllipse(arr_cx - 3, body_y + body_h - 12, 6, 6)
+
+        # Cable line hanging below robot body
+        cable_top_y = body_y + body_h
+        cable_bot_y = lp_y + lp_h - 6
+        cable_pen = QPen(white, 1.5)
+        cable_pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(cable_pen)
+        p.drawLine(arr_cx, cable_top_y, arr_cx, cable_bot_y)
+
+        # --- Leg arrow boxes (3 on each side) ---
+        box_sz = 22
+        leg_offsets = self.hud.LEG_OFFSETS   # [L1, L2, L3, R1, R2, R3]
+        phase_l = self.hud.leg_phase_left
+        phase_r = self.hud.leg_phase_right
+        leg_cycle = [False, True, False, False]  # white, GREEN, white, white
+
+        # Vertical positions for the 3 rows of legs (front, mid, rear)
+        leg_ys = [
+            body_y + 8,
+            body_y + (body_h - box_sz) // 2,
+            body_y + body_h - box_sz - 8,
+        ]
+
+        left_x  = body_x - box_sz - 10
+        right_x = body_x + body_w + 10
+
+        for i in range(3):
+            # Left leg (indices 0-2) — uses right phase
+            l_active = leg_cycle[(phase_r - leg_offsets[i]) % 4]
+            self._draw_leg_box(p, left_x, leg_ys[i], box_sz, l_active, green, QColor(255, 255, 255, 120), panel_bg)
+            # Right leg (indices 3-5) — uses left phase
+            r_active = leg_cycle[(phase_l - leg_offsets[i + 3]) % 4]
+            self._draw_leg_box(p, right_x, leg_ys[i], box_sz, r_active, green, QColor(255, 255, 255, 120), panel_bg)
+
         # --- Status Bar (bottom) ---
         p.setBrush(QColor(0, 0, 0, 160))
         p.setPen(border)
@@ -639,7 +821,7 @@ class HUDOverlay(QLabel):
         vm_raw = getattr(self.hud, 'vm_status', '')
         vm_st = "Connected" if "connected" in vm_raw.lower() else "Disconnected"
 
-        motor_st = "Connected" if "connected" in self.hud.motor_status.lower() else "Disconnected"
+        motor_st = "Connected" if self.hud.motor_connected else "Disconnected"
 
         bold_font   = QFont("Consolas", 9, QFont.Weight.Bold)
         normal_font = QFont("Consolas", 9)
@@ -649,27 +831,35 @@ class HUDOverlay(QLabel):
         p.setFont(bold_font)
         p.drawText(20, sb_y + 20, "BASE:")
         p.setFont(normal_font)
-        p.drawText(20 + label_gap, sb_y + 20,
-                   f"COMM: OK  |  {self.hud.heading_status}  |  {self.hud.slam_status}")
+        p.drawText(20 + label_gap, sb_y + 20, f"COMM: OK  |  {self.hud.heading_status}  |  {self.hud.slam_status}")
 
         # Row 2 — ROBOT:
         p.setFont(bold_font)
         p.drawText(20, sb_y + 40, "ROBOT:")
         p.setFont(normal_font)
-        p.drawText(20 + label_gap, sb_y + 40,
-                   f"VM: {vm_st}  |  CAMERA: {cam_st}  |  MOTORS: {motor_st}")
-
+        p.drawText(20 + label_gap, sb_y + 40, f"VM: {vm_st}  |  CAMERA: {cam_st}  |  MOTORS: {motor_st}")
 
         p.end()
 
 
 # ========================== Main HUD Window ==========================
+def resource_path(relative_path):
+        """Get absolute path to resource, works for dev and for PyInstaller"""
+
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
+
+
 class HUDWindow(QMainWindow):
     """Main window — camera feed background with motor + SLAM HUD overlay."""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RoboKedach HUD")
+        self.setWindowIcon(QIcon(resource_path("robokedach_icon.ico")))
         self.setStyleSheet("background-color: black;")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -682,6 +872,7 @@ class HUDWindow(QMainWindow):
         self.vm_data = {'voltage': 0.0, 'current': 0.0}
         self.camera_status = "Disconnected"
         self.motor_status = "Disconnected"
+        self.motor_connected = False
         self.motor_left_speed = 64
         self.motor_right_speed = 64
         self.SPEED_MIN = 10
@@ -692,6 +883,15 @@ class HUDWindow(QMainWindow):
         self.heading_status = "Heading: Idle"
         self._heading_deg = None
         self._heading_tracking = False
+
+        # Leg phase animation state
+        # Phase offsets per leg — cycle is [white, GREEN, white, white]
+        # At phase p, leg with offset o → cycle step = (p - o) % 4
+        self.leg_phase_left = 0      # left side quarter-rotation counter (0-3)
+        self.leg_phase_right = 0     # right side quarter-rotation counter (0-3)
+        self._leg_phase_offset_left = 0   # saved offset on encoder reset
+        self._leg_phase_offset_right = 0
+        self.LEG_OFFSETS = [0, 2, 0, 2, 0, 2]  # L1 L2 L3 R1 R2 R3
 
         # Continuous movement state
         self._held_key_code = None   # Qt key code of the held movement key
@@ -757,7 +957,7 @@ class HUDWindow(QMainWindow):
         )
 
         # Heading Track button
-        self.heading_btn = QPushButton("Start Heading Track", self)
+        self.heading_btn = QPushButton("Track Heading", self)
         self.heading_btn.setStyleSheet(btn_style)
         self.heading_btn.clicked.connect(self._on_heading_btn)
         self.heading_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -792,7 +992,10 @@ class HUDWindow(QMainWindow):
         # Motor command client worker
         self.motor_worker = MotorCommandWorker(RPI_IP, MOTOR_PORT)
         self.motor_worker.status_update.connect(self._on_motor_status)
+        self.motor_worker.connection_update.connect(self._on_motor_connection)
         self.motor_worker.speed_update.connect(self._on_motor_speed)
+        self.motor_worker.encoder_update.connect(self._on_encoder_update)
+        self.motor_worker.motor_ready.connect(self._on_motor_ready)
         self.motor_worker.heading_calibrated.connect(self._on_heading_calibrated)
         self.motor_worker.heading_received.connect(self._on_heading_received)
         self.motor_worker.start()
@@ -819,6 +1022,11 @@ class HUDWindow(QMainWindow):
         self.slam_worker.core_running.connect(self._on_core_running)
         self.slam_worker.live_running.connect(self._on_live_running)
         self.slam_worker.start()
+
+        # RPi remote worker (auto-launches rpi_main.py via SSH)
+        self.rpi_worker = RPiRemoteWorker()
+        self.rpi_worker.status_update.connect(lambda msg: print(msg))
+        self.rpi_worker.start()
 
     # --- Heading Buttons ---
     def _on_heading_btn(self):
@@ -883,9 +1091,6 @@ class HUDWindow(QMainWindow):
         if key == Qt.Key.Key_Up:
             cmd = "FWD90" if shift else "FWD"
             is_movement = True
-        # elif key == Qt.Key.Key_Down:
-        #     cmd = "BWD90" if shift else "BWD"
-        #     is_movement = True
         elif key == Qt.Key.Key_Left:
             cmd = "LEFT90" if shift else "LEFT"
             is_movement = True
@@ -898,10 +1103,12 @@ class HUDWindow(QMainWindow):
             cmd = "DIFF_DOWN" if shift else "SPEED_DOWN"
         elif key == Qt.Key.Key_Space:
             cmd = "ABORT"
-            # Abort cancels continuous movement
-            self._held_key_code = None
+            self._held_key_code = None  # Abort cancels continuous movement
         elif key == Qt.Key.Key_R:
             cmd = "RESET_ENC"
+            # Preserve current leg phase as offset so visuals stay continuous
+            self._leg_phase_offset_left = self.leg_phase_left
+            self._leg_phase_offset_right = self.leg_phase_right
             self.show_popup("ENCODERS RESET")
 
         if cmd:
@@ -931,6 +1138,23 @@ class HUDWindow(QMainWindow):
         self.popup_label.raise_()
         self.popup_timer.start(1500)
 
+    def _on_motor_ready(self):
+        """RPi reports movement complete."""
+        self.overlay.update()
+
+    def _on_encoder_update(self, enc1, enc2):
+        """Update leg phases directly from absolute encoder positions."""
+        # 8400 ticks / 4 quarters = 2100 ticks per quarter
+        # enc1 tracks physical M2 (logical M1/Left)
+        # enc2 tracks physical M1 (logical M2/Right)
+        # Both encoders are inverted by multiplier -1 in RPi, so positive = forward
+        
+        raw_left = ((enc1 // 2100) + 1) % 4
+        raw_right = ((enc2 // 2100) + 1) % 4
+        self.leg_phase_left = (raw_left + self._leg_phase_offset_left) % 4
+        self.leg_phase_right = (raw_right + self._leg_phase_offset_right) % 4
+        self.overlay.update()
+
     # --- Slots ---
     def _on_frame(self, image):
         pixmap = QPixmap.fromImage(image)
@@ -949,6 +1173,10 @@ class HUDWindow(QMainWindow):
         self.motor_status = msg
         self.overlay.update()
 
+    def _on_motor_connection(self, connected):
+        self.motor_connected = connected
+        self.overlay.update()
+
     def _on_motor_speed(self, left_speed, right_speed):
         self.motor_left_speed = left_speed
         self.motor_right_speed = right_speed
@@ -961,14 +1189,13 @@ class HUDWindow(QMainWindow):
     def _on_vm_data(self, voltage, current):
         self.vm_data = {'voltage': voltage, 'current': current}
         self.overlay.update()
+
         # Show/hide persistent low battery warning (orange = <=10.8V)
         if voltage > 0 and voltage <= 10.8:
             if not self.bat_warn_label.isVisible():
                 self.bat_warn_label.adjustSize()
                 pw, ph = self.bat_warn_label.width(), self.bat_warn_label.height()
-                self.bat_warn_label.setGeometry(
-                    (self.width() - pw) // 2, (self.height() - ph) // 2, pw, ph
-                )
+                self.bat_warn_label.setGeometry((self.width() - pw) // 2, (self.height() - ph) // 2, pw, ph)
                 self.bat_warn_label.show()
                 self.bat_warn_label.raise_()
         else:
@@ -998,7 +1225,7 @@ class HUDWindow(QMainWindow):
         super().resizeEvent(event)
         self.overlay.setGeometry(0, 0, self.width(), self.height())
         # Position buttons at top-right (Heading Track, Landed, Start SLAM, Record Bag)
-        btn_w, btn_h, gap = 200, 36, 8
+        btn_w, btn_h, gap = 170, 36, 6
         x = self.width() - btn_w - 15
         y = 15
         self.heading_btn.setGeometry(x, y, btn_w, btn_h)
@@ -1010,20 +1237,47 @@ class HUDWindow(QMainWindow):
         self.bag_btn.setGeometry(x, y, btn_w, btn_h)
 
     def closeEvent(self, event):
+        # --- Stop rpi_main.py on the Pi FIRST ---
+        self._stop_rpi_remote()
+
         self.vm_timer.stop()
         self.heartbeat_timer.stop()
         self.cam_worker.stop()
         self.motor_worker.stop()
         self.slam_worker.stop()
         self.vm_worker.stop()
+        self.rpi_worker.stop()
         self.cam_worker.wait(3000)
         self.motor_worker.wait(3000)
         self.slam_worker.wait(5000)
         self.vm_worker.wait(3000)
+        self.rpi_worker.wait(3000)
         event.accept()
+
+    def _stop_rpi_remote(self):
+        """SSH into the Pi and kill rpi_main.py."""
+
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(hostname=RPI_SSH_HOST, username=RPI_SSH_USER, password=RPI_SSH_PASS, timeout=5)
+            ssh.exec_command("pkill -f rpi_main.py")
+
+            time.sleep(1)  # give it a moment to terminate
+            ssh.close()
+        
+        except Exception as e:
+            print(f"RPi stop failed: {e}")
 
 
 if __name__ == "__main__":
+    # 1. Tell Windows this is a unique app to fix the taskbar icon
+    # We check if the OS is Windows ('nt') so it does not crash on Mac/Linux
+    if os.name == 'nt':
+        myappid = 'RoboKedach.Product.PC_Main.1.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    
+    # 2. Start the application normally
     app = QApplication(sys.argv)
     window = HUDWindow()
     window.show()

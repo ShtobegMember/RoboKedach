@@ -1,5 +1,5 @@
 """
-heading_tracker2.py - Pre-SLAM heading tracker using LSM6DSV16X IMU.
+heading_tracker.py - Pre-SLAM heading tracker using LSM6DSV16X IMU.
 
 Uses a Mahony AHRS filter (gyro + accelerometer fusion) to track 3D orientation
 during vertical pipe descent. Extracts heading (yaw around gravity) as the
@@ -85,6 +85,7 @@ class MahonyAHRS:
         """
         Run one filter iteration with RK4 and Adaptive Gain.
         """
+
         q0, q1, q2, q3 = self.q
         gx, gy, gz = float(gyro[0]), float(gyro[1]), float(gyro[2])
         ax, ay, az = float(accel[0]), float(accel[1]), float(accel[2])
@@ -191,21 +192,25 @@ class MahonyAHRS:
         horizontal-rotation behavior — it only fixes the singularity at
         pitch = +/-90 deg.
         """
+
         q0, q1, q2, q3 = self.q
+
         # Body-Y axis expressed in the world frame (column 1 of R(q)).
         wy_x = 2.0 * (q1 * q2 - q0 * q3)
         wy_y = 1.0 - 2.0 * (q1 * q1 + q3 * q3)
-        # With the IMU mounted right-side up, atan2(wy_x, wy_y) directly
-        # gives "clockwise-from-above = positive" heading convention.
+
+        # IMU mounted right-side up, atan2(wy_x, wy_y) gives "clockwise-from-above = positive" heading convention
         return math.atan2(wy_x, wy_y)
 
     def get_euler_deg(self):
         """Return (roll, pitch, yaw) in degrees.  Z-Y-X intrinsic convention."""
+
         q0, q1, q2, q3 = self.q
 
         # Roll (X)
         roll = math.atan2(2.0 * (q0 * q1 + q2 * q3),
                           1.0 - 2.0 * (q1 * q1 + q2 * q2))
+        
         # Pitch (Y) — clamped to avoid NaN at gimbal lock
         sinp = 2.0 * (q0 * q2 - q3 * q1)
         sinp = max(-1.0, min(1.0, sinp))
@@ -258,6 +263,7 @@ class LSM6DSV16X_HeadingTracker:
     # -------------------- Sensor Init --------------------
     def initialize_sensor(self):
         """Reset the IMU and configure ODR, LPF, BDU, auto-increment."""
+
         self.bus = smbus2.SMBus(self.bus_num)
 
         # Software reset
@@ -284,6 +290,7 @@ class LSM6DSV16X_HeadingTracker:
     # -------------------- Raw Reads --------------------
     def _data_ready(self):
         """Check if both accel and gyro have new data."""
+
         status = self.bus.read_byte_data(self.address, REG_STATUS)
         return bool(status & 0x03)
 
@@ -294,6 +301,7 @@ class LSM6DSV16X_HeadingTracker:
             gyro:  np.array [gx, gy, gz] in rad/s
             accel: np.array [ax, ay, az] in m/s^2
         """
+
         data = self.bus.read_i2c_block_data(self.address, REG_OUTX_L_G, 12)
         raw = struct.unpack('<6h', bytes(data))
 
@@ -302,15 +310,18 @@ class LSM6DSV16X_HeadingTracker:
             np.radians(raw[1] * GYRO_SENSITIVITY),
             np.radians(raw[2] * GYRO_SENSITIVITY),
         ])
+
         accel = np.array([
             raw[3] * ACCEL_SENSITIVITY,
             raw[4] * ACCEL_SENSITIVITY,
             raw[5] * ACCEL_SENSITIVITY,
         ])
+
         return gyro, accel
 
     def read_temperature(self):
         """Read IMU die temperature in degrees Celsius."""
+
         data = self.bus.read_i2c_block_data(self.address, OUT_TEMP_L, 2)
         raw = struct.unpack('<h', bytes(data))[0]
         return raw / 256.0 + 25.0
@@ -322,6 +333,7 @@ class LSM6DSV16X_HeadingTracker:
         Runs the Mahony filter with high gains so the quaternion converges to the
         true orientation and the integral term builds a bias estimate.
         """
+
         print(f"HEADING: Calibrating ({num_samples} samples, "
               f"~{num_samples / SAMPLE_RATE:.0f}s)...")
 
@@ -371,6 +383,7 @@ class LSM6DSV16X_HeadingTracker:
     # -------------------- Phase 2: Descent Tracking --------------------
     def start_tracking(self):
         """Start continuous Mahony updates in a background thread."""
+
         if self._tracking:
             return
 
@@ -382,6 +395,7 @@ class LSM6DSV16X_HeadingTracker:
 
     def _tracking_loop(self):
         """Mahony filter loop running at ~120 Hz."""
+
         last_time = None
         last_log_time = time.time()
 
@@ -427,6 +441,7 @@ class LSM6DSV16X_HeadingTracker:
 
     def stop_tracking(self):
         """Stop the tracking loop."""
+
         self._tracking = False
         if self._track_thread:
             self._track_thread.join(timeout=2)
@@ -438,6 +453,7 @@ class LSM6DSV16X_HeadingTracker:
         with moderate gains while stationary so the bias estimate and orientation
         can settle before extracting the final heading.
         """
+
         self.stop_tracking()
 
         print(f"HEADING: Settling ({self.SETTLING_DURATION}s, moderate gains)...")
@@ -489,12 +505,14 @@ class LSM6DSV16X_HeadingTracker:
     # -------------------- Accessors --------------------
     def get_heading(self):
         """Return current heading estimate in degrees."""
+
         delta_yaw = self.ahrs.get_yaw() - self._yaw_initial
         delta_yaw = (delta_yaw + math.pi) % (2.0 * math.pi) - math.pi
         return math.degrees(delta_yaw) * HEADING_SIGN
 
     def close(self):
         """Release I2C bus and reset IMU."""
+
         self._tracking = False
         if self._track_thread and self._track_thread.is_alive():
             self._track_thread.join(timeout=2)
@@ -520,6 +538,7 @@ def run_heading_tracker(command_queue, result_queue):
                  ('HEADING', float)
                  ('STATUS', 'HEADING_ERROR:...')
     """
+
     tracker = LSM6DSV16X_HeadingTracker()
 
     try:
@@ -564,5 +583,6 @@ def run_heading_tracker(command_queue, result_queue):
     except Exception as e:
         print(f"HEADING: Fatal error: {e}")
         result_queue.put(('STATUS', f'HEADING_ERROR:{e}'))
+    
     finally:
         tracker.close()

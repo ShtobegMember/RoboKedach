@@ -78,6 +78,17 @@ class RobotConfig:
     # Encoder ticks per full wheel rotation
     ticks_per_cycle: int = 8400
 
+    # Overshoot correction — reduce target ticks at higher speeds to compensate
+    # for motor coast-through. Piecewise linear in three segments:
+    #   speed <= low_threshold:                no correction
+    #   low_threshold < speed <= high_threshold: low_slope per unit above low_threshold
+    #   speed > high_threshold:                 low_slope in first band + high_slope above high_threshold
+    # Tune empirically: raise a slope if still overshooting in that band.
+    overshoot_low_threshold: int = 24    # Below/at this speed, no correction
+    overshoot_high_threshold: int = 94   # Above this speed, switch to the steeper slope
+    overshoot_low_slope: float = 6.0     # Ticks shaved per unit of speed in the low band
+    overshoot_high_slope: float = 10.0   # Ticks shaved per unit of speed in the high band
+
     # Speed settings (RoboClaw PWM range: 0–127)
     default_speed: int = 64
     min_speed: int = 10
@@ -285,7 +296,18 @@ class MovementController:
         cycle_pos1, cycle_pos2 = self.motor_ctrl.get_cycle_positions(
             self.config.ticks_per_cycle * fraction
         )
-        distance_to_travel = int(self.config.ticks_per_cycle * fraction)
+
+        # Apply speed-dependent overshoot correction: aim short of the full cycle
+        # so motor coast lands us on target. See RobotConfig for tuning constants.
+        speed = self.motor_ctrl.avg_speed
+        low_t = self.config.overshoot_low_threshold
+        high_t = self.config.overshoot_high_threshold
+        low_band = max(0, min(speed, high_t) - low_t)
+        high_band = max(0, speed - high_t)
+        overshoot = (self.config.overshoot_low_slope * low_band
+                     + self.config.overshoot_high_slope * high_band)
+        ticks_aim = self.config.ticks_per_cycle - overshoot
+        distance_to_travel = int(ticks_aim * fraction)
 
         # Calculate absolute target positions
         target1 = abs_pos1 + ((distance_to_travel - cycle_pos1) * m1_forward)
