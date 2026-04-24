@@ -41,9 +41,10 @@ INA226_BUS_V_LSB   = 1.25e-3    # 1.25 mV/bit
 INA226_CURRENT_LSB = 0.00025    # 0.25 mA/bit
 
 # Pin Cyclone DDS to the fiber interface only, unicast data to prevent network flood
+RPI_FIBER_IP = "192.168.1.2"  # RPI's fiber adapter IP — verify with ipconfig
 CYCLONEDDS_CFG = (
     '<CycloneDDS><Domain><General>'
-    '<NetworkInterfaceAddress>192.168.1.2</NetworkInterfaceAddress>'
+    f'<NetworkInterfaceAddress>{RPI_FIBER_IP}</NetworkInterfaceAddress>'
     '<AllowMulticast>spdp</AllowMulticast>'
     '</General></Domain></CycloneDDS>'
 )

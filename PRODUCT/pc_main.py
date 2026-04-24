@@ -182,7 +182,6 @@ class MotorCommandWorker(QThread):
     """TCP client that sends motor commands to and receives status from the RPi."""
 
     status_update = pyqtSignal(str)
-    connection_update = pyqtSignal(bool)
     speed_update = pyqtSignal(int, int)
     encoder_update = pyqtSignal(int, int)
     motor_ready = pyqtSignal()
@@ -210,7 +209,6 @@ class MotorCommandWorker(QThread):
                     self._sock = sock
 
                 self.status_update.emit("Motor: Connected")
-                self.connection_update.emit(True)
 
                 buf = ""
                 while self.is_running:
@@ -259,7 +257,6 @@ class MotorCommandWorker(QThread):
             except Exception as e:
                 self.status_update.emit(f"Motor: {e}")
 
-            self.connection_update.emit(False)
             with self._lock:
                 self._sock = None
             if self.is_running:
@@ -474,7 +471,7 @@ class RPiRemoteWorker(QThread):
                 self.status_update.emit("RPi: SSH connected. Launching rpi_main.py...")
 
                 stdin, stdout, stderr = ssh.exec_command(
-                    "cd Desktop/PRODUCT && python3 rpi_main.py",
+                    "cd Desktop/PRESENT && python3 rpi_main.py",
                     get_pty=True
                 )
 
@@ -821,7 +818,8 @@ class HUDOverlay(QLabel):
         vm_raw = getattr(self.hud, 'vm_status', '')
         vm_st = "Connected" if "connected" in vm_raw.lower() else "Disconnected"
 
-        motor_st = "Connected" if self.hud.motor_connected else "Disconnected"
+        motor_raw = self.hud.motor_status.lower()
+        motor_st = "Disconnected" if "disconnected" in motor_raw else "Connected"
 
         bold_font   = QFont("Consolas", 9, QFont.Weight.Bold)
         normal_font = QFont("Consolas", 9)
@@ -872,7 +870,6 @@ class HUDWindow(QMainWindow):
         self.vm_data = {'voltage': 0.0, 'current': 0.0}
         self.camera_status = "Disconnected"
         self.motor_status = "Disconnected"
-        self.motor_connected = False
         self.motor_left_speed = 64
         self.motor_right_speed = 64
         self.SPEED_MIN = 10
@@ -992,7 +989,6 @@ class HUDWindow(QMainWindow):
         # Motor command client worker
         self.motor_worker = MotorCommandWorker(RPI_IP, MOTOR_PORT)
         self.motor_worker.status_update.connect(self._on_motor_status)
-        self.motor_worker.connection_update.connect(self._on_motor_connection)
         self.motor_worker.speed_update.connect(self._on_motor_speed)
         self.motor_worker.encoder_update.connect(self._on_encoder_update)
         self.motor_worker.motor_ready.connect(self._on_motor_ready)
@@ -1171,10 +1167,6 @@ class HUDWindow(QMainWindow):
 
     def _on_motor_status(self, msg):
         self.motor_status = msg
-        self.overlay.update()
-
-    def _on_motor_connection(self, connected):
-        self.motor_connected = connected
         self.overlay.update()
 
     def _on_motor_speed(self, left_speed, right_speed):
