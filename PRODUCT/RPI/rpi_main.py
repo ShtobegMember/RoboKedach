@@ -26,8 +26,8 @@ from heading_tracker import run_heading_tracker
 # ========================== Configuration ==========================
 PC_IP = "192.168.1.1"
 
-MOTOR_PORT = 65433
-VM_PORT    = 65434
+MOTOR_PORT = 55433
+VM_PORT    = 55434
 
 # INA226 (Voltage Monitor) on I2C bus 3
 INA226_BUS         = 3
