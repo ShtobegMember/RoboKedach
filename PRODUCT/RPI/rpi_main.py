@@ -93,7 +93,9 @@ def vm_streamer(server_ip, port):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 print(f"VM: Connecting to PC at {server_ip}:{port}...")
+                s.settimeout(5.0)  # Stop waiting after 5 seconds if firewall blocks us
                 s.connect((server_ip, port))
+                s.settimeout(None) # Set back to blocking for stable data stream
                 print("VM: Connected. Streaming power data.")
 
                 while True:
@@ -109,6 +111,10 @@ def vm_streamer(server_ip, port):
 
         except ConnectionRefusedError:
             print("VM: PC not ready. Retrying in 3s...")
+            time.sleep(3)
+        except socket.timeout:
+            print(f"VM: Connection timed out. The PC at {server_ip} is NOT responding.")
+            print(f"    Check: 1. Is the PC Network Profile 'Private'? 2. Is Port {port} open for ALL profiles?")
             time.sleep(3)
         except (ConnectionResetError, BrokenPipeError):
             print("VM: Connection lost. Reconnecting in 2s...")

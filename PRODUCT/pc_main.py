@@ -138,10 +138,22 @@ class VMServerWorker(QThread):
             server.bind((self.host, self.port))
             server.listen()
             server.settimeout(1.0)
+
+            # Diagnostic: Print all local IPs to ensure 192.168.1.1 is active
+            try:
+                hostname = socket.gethostname()
+                local_ips = socket.gethostbyname_ex(hostname)[2]
+                print(f"VM Server: Started. Local IPs detected: {local_ips}")
+            except Exception:
+                pass
+
             self.status_update.emit(f"VM: Listening on port {self.port}")
+            print(f"VM Server: Listening on port {self.port} (IP: {self.host})")
+            print("VM Server: Waiting for RPi connection...")
 
             while self.is_running:
                 try:
+                    # This will block for 1s (due to settimeout) then throw socket.timeout
                     conn, addr = server.accept()
                     self._handle_client(conn, addr)
                 except socket.timeout:
