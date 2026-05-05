@@ -1,0 +1,6 @@
+PyQt6
+paramiko
+Flask
+pyserial
+smbus2
+pyinstaller
