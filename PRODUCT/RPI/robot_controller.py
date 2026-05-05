@@ -113,6 +113,14 @@ class MotorController:
         if not self.rc.Open():
             raise ConnectionError(f"Could not open serial port: {config.port}")
 
+        # Inside MotorController.__init__
+        success, version = self.rc.ReadVersion(config.address)
+        if not success:
+            print("🚨 ERROR: RoboClaw not found! Check wiring and Baud Rate.")
+        else:
+            print(f"✅ Connected to RoboClaw: {version}")
+        
+
         self.reset_encoders()
 
     @property
@@ -130,13 +138,14 @@ class MotorController:
         Returns: (success, m1_value, m2_value)
         """
 
-        status1, enc1, _ = self.rc.ReadEncM2(self.config.address)
-        status2, enc2, _ = self.rc.ReadEncM1(self.config.address)
+        # The local roboclaw.py returns (success, value, status) on success, or (0, 0) on failure.
+        res1 = self.rc.ReadEncM2(self.config.address)
+        res2 = self.rc.ReadEncM1(self.config.address)
 
-        if not (status1 and status2):
-            return False, 0, 0
+        if len(res1) == 3 and len(res2) == 3 and res1[0] == 1 and res2[0] == 1:
+            return True, res1[1], res2[1]
 
-        return True, enc1, enc2
+        return False, 0, 0
 
     def get_cycle_positions(self, full_rotation) -> Tuple[int, int]:
         """
@@ -494,3 +503,19 @@ class RobotInterface:
         finally:
             self.motor_ctrl.stop_all()
             print("✓ Motors stopped\n")
+
+if __name__ == "__main__":
+    # Standalone Diagnostic Entry Point
+    try:
+        cfg = RobotConfig()
+        print(f"\n🔍 DIAGNOSTIC: Initializing RoboClaw on {cfg.port}...")
+        robot = RobotInterface(cfg)
+        
+        # Verify Serial Connection
+        success, version = robot.motor_ctrl.rc.ReadVersion(cfg.address)
+        if success:
+            print(f"✅ CONNECTION OK: Firmware Version: {version}")
+        
+        robot.run()
+    except Exception as e:
+        print(f"❌ FATAL ERROR: {e}")

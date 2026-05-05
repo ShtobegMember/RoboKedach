@@ -228,10 +228,15 @@ class MotorCommandWorker(QThread):
                         data = sock.recv(1024)
                         if not data:
                             break
-                        buf += data.decode('utf-8')
-                        while '\n' in buf:
+                        try:
+                            buf += data.decode('utf-8')
+                        except UnicodeDecodeError:
+                            continue
+
+                        while buf and '\n' in buf:
                             line, buf = buf.split('\n', 1)
                             msg = line.strip()
+                            print(f"Motor: Command recieved - {msg}")
                             if msg.startswith("SPEED:"):
                                 try:
                                     left_s, right_s = msg[6:].split(",", 1)
@@ -276,6 +281,8 @@ class MotorCommandWorker(QThread):
 
     def send_command(self, cmd):
         """Thread-safe command send. Called from the GUI thread."""
+        if cmd != "HEARTBEAT":
+            print(f"Motor: Sending command -> {cmd}")
 
         with self._lock:
             if self._sock:
@@ -1090,6 +1097,7 @@ class HUDWindow(QMainWindow):
         if event.isAutoRepeat():
             return
 
+        print(f"HUD: Key pressed - {event.key()}")
         shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         key = event.key()
 
@@ -1148,6 +1156,8 @@ class HUDWindow(QMainWindow):
 
     def _on_motor_ready(self):
         """RPi reports movement complete."""
+        print("HUD: Motor READY signal received")
+        self.motor_status = "Motor: Ready"
         self.overlay.update()
 
     def _on_encoder_update(self, enc1, enc2):
