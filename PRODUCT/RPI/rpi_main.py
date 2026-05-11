@@ -9,6 +9,7 @@ START_SLAM command. All processes are health-monitored with up to 3 auto-restart
 import sys
 import time
 import os
+import json
 import smbus2
 
 import socket
@@ -24,15 +25,29 @@ from heading_tracker import run_heading_tracker
 
 
 # ========================== Configuration ==========================
-PC_IP = "192.168.1.1"
+def get_config():
+    """Load system configuration from config.json."""
+    locs = [
+        os.path.join(os.path.dirname(__file__), "config.json"),
+        os.path.join(os.path.dirname(__file__), "..", "config.json"),
+        "config.json"
+    ]
+    for loc in locs:
+        if os.path.exists(loc):
+            with open(loc, 'r') as f:
+                return json.load(f)
+    raise FileNotFoundError("Could not find config.json")
 
-MOTOR_PORT = 55433
-VM_PORT    = 55434
+CONFIG = get_config()
+
+PC_IP = CONFIG["network"]["pc_ip"]
+MOTOR_PORT = CONFIG["network"]["motor_port"]
+VM_PORT    = CONFIG["network"]["vm_port"]
 
 # INA226 (Voltage Monitor) on I2C bus 3
-INA226_BUS         = 3
-INA226_ADDR        = 0x40
-INA226_SHUNT_OHMS  = 0.01       # R010 = 10 mOhm
+INA226_BUS         = CONFIG["hardware"]["ina226"]["bus"]
+INA226_ADDR        = CONFIG["hardware"]["ina226"]["address"]
+INA226_SHUNT_OHMS  = CONFIG["hardware"]["ina226"]["shunt_ohms"]
 INA226_REG_CONFIG  = 0x00
 INA226_REG_BUS_V   = 0x02
 INA226_REG_CURRENT = 0x04
@@ -41,7 +56,7 @@ INA226_BUS_V_LSB   = 1.25e-3    # 1.25 mV/bit
 INA226_CURRENT_LSB = 0.00025    # 0.25 mA/bit
 
 # Pin Cyclone DDS to the fiber interface only, unicast data to prevent network flood
-RPI_FIBER_IP = "192.168.1.2"  # RPI's fiber adapter IP — verify with ipconfig
+RPI_FIBER_IP = CONFIG["network"]["rpi_ip"]
 CYCLONEDDS_CFG = (
     '<CycloneDDS><Domain><General>'
     f'<NetworkInterfaceAddress>{RPI_FIBER_IP}</NetworkInterfaceAddress>'
@@ -125,10 +140,10 @@ def vm_streamer(server_ip, port):
 
 
 # ========================== Camera Process ==========================
-def camera_process():
+def camera_process(port):
     """Run the MJPEG camera server (Flask on port 5000)."""
 
-    run_server()
+    run_server(port=port)
 
 
 # ========================== LIDAR Process ==========================
@@ -182,7 +197,21 @@ def motor_process(port, slam_event, heading_cmd_queue, heading_result_queue):
     state = MotorSharedState()
 
     # Initialize motor hardware with retry
-    config = RobotConfig()
+    mc = CONFIG["hardware"]["roboclaw"]
+    mm = CONFIG["hardware"]["motors"]
+    config = RobotConfig(
+        port=mc["port"],
+        baud_rate=mc["baud_rate"],
+        address=mc["address"],
+        m1_multiplier=mm["m1_multiplier"],
+        m2_multiplier=mm["m2_multiplier"],
+        ticks_per_cycle=mm["ticks_per_cycle"],
+        default_speed=mm["default_speed"],
+        min_speed=mm["speed_min"],
+        max_speed=mm["speed_max"],
+        speed_increment=mm["speed_increment"],
+        diff_speed_increment=mm["diff_speed_increment"]
+    )
     motor_ctrl = None
     while motor_ctrl is None:
         try:
@@ -402,8 +431,8 @@ def main():
     print("=" * 50)
 
     # ROS2 environment setup
-    os.environ["ROS_DOMAIN_ID"] = "1"
-    print("  ROS_DOMAIN_ID set to 1")
+    os.environ["ROS_DOMAIN_ID"] = str(CONFIG["wsl"]["ros_domain_id"])
+    print(f"  ROS_DOMAIN_ID set to {os.environ['ROS_DOMAIN_ID']}")
 
     procs = {}
 
@@ -424,7 +453,7 @@ def main():
 
     start_process("VMStreamer", vm_streamer, (PC_IP, VM_PORT))
     start_process("MotorEngine", motor_process, (MOTOR_PORT, slam_event, heading_cmd_queue, heading_result_queue))
-    start_process("CameraServer", camera_process)
+    start_process("CameraServer", camera_process, (CONFIG["network"]["camera_port"],))
 
     print("\nAll processes running. Press Ctrl+C to stop.\n")
 

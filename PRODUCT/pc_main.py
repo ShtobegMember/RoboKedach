@@ -9,6 +9,7 @@ buttons: Start SLAM (sends START_SLAM to Pi to launch LIDAR/IMU) and Record Bag
 import os
 import ctypes
 import sys
+import json
 import math
 import time
 from datetime import datetime
@@ -26,21 +27,36 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton
 
 
 # ========================== Configuration ==========================
+def get_config():
+    """Load system configuration from config.json."""
+    locations = [
+        os.path.join(os.path.dirname(__file__), "config.json"),
+        os.path.join(os.path.dirname(__file__), "RPI", "config.json"),
+        "config.json"
+    ]
+    for loc in locations:
+        if os.path.exists(loc):
+            with open(loc, 'r') as f:
+                return json.load(f)
+    raise FileNotFoundError("Could not find config.json")
+
+CONFIG = get_config()
+
 # Raspberry Pi SSH credentials
-RPI_IP       = "192.168.1.2"
-RPI_SSH_HOST = "ood"
-RPI_SSH_USER = "foo"
-RPI_SSH_PASS = " "
+RPI_IP       = CONFIG["network"]["rpi_ip"]
+RPI_SSH_HOST = CONFIG["network"]["ssh"]["host"]
+RPI_SSH_USER = CONFIG["network"]["ssh"]["user"]
+RPI_SSH_PASS = CONFIG["network"]["ssh"]["pass"]
 
-MOTOR_PORT = 55433
-VM_PORT    = 55434
-CAMERA_URL = f"http://{RPI_IP}:5000/"
+MOTOR_PORT = CONFIG["network"]["motor_port"]
+VM_PORT    = CONFIG["network"]["vm_port"]
+CAMERA_URL = f"http://{RPI_IP}:{CONFIG['network']['camera_port']}/"
 
-WSL_DISTRO = "Ubuntu-24.04"
-WSL_PATH   = "~/cartographer_ws"
+WSL_DISTRO = CONFIG["wsl"]["distro"]
+WSL_PATH   = CONFIG["wsl"]["path"]
 
 # Pin Cyclone DDS to the fiber interface only, unicast data to prevent network flood
-PC_FIBER_IP = "192.168.1.1"  # PC's fiber adapter IP — verify with ipconfig
+PC_FIBER_IP = CONFIG["network"]["pc_ip"]
 CYCLONEDDS_CFG = (
     '<CycloneDDS><Domain><General>'
     f'<NetworkInterfaceAddress>{PC_FIBER_IP}</NetworkInterfaceAddress>'
@@ -52,14 +68,11 @@ WSL_ROS_PREAMBLE = (
     "source /opt/ros/kilted/setup.bash && "
     "source ~/ros2_libs/install/setup.bash && "
     "source ~/cartographer_ws/install/setup.bash && "
-    "export ROS_DOMAIN_ID=1 && "
+    f"export ROS_DOMAIN_ID={CONFIG['wsl']['ros_domain_id']} && "
     f"export CYCLONEDDS_URI='{CYCLONEDDS_CFG}' && "
 )
 
-SLAM_CORE_CMDS = {
-    "RViz2": "ros2 run rviz2 rviz2 -d ~/cartographer_ws/src/my_robot_slam/rviz/mapper.rviz",
-    "Cartographer": "ros2 launch my_robot_slam online_slam.launch.py",
-}
+SLAM_CORE_CMDS = CONFIG["wsl"]["core_commands"]
 
 def _bag_record_cmd():
     """Generate a bag record command with a timestamped output name."""
@@ -889,10 +902,10 @@ class HUDWindow(QMainWindow):
         self.vm_data = {'voltage': 0.0, 'current': 0.0}
         self.camera_status = "Disconnected"
         self.motor_status = "Disconnected"
-        self.motor_left_speed = 64
-        self.motor_right_speed = 64
-        self.SPEED_MIN = 10
-        self.SPEED_MAX = 127
+        self.motor_left_speed = CONFIG["hardware"]["motors"]["default_speed"]
+        self.motor_right_speed = CONFIG["hardware"]["motors"]["default_speed"]
+        self.SPEED_MIN = CONFIG["hardware"]["motors"]["speed_min"]
+        self.SPEED_MAX = CONFIG["hardware"]["motors"]["speed_max"]
         self.slam_status = "SLAM: Starting..."
         self._slam_live = False
         self._slam_started = False
@@ -907,7 +920,7 @@ class HUDWindow(QMainWindow):
         self.leg_phase_right = 0     # right side quarter-rotation counter (0-3)
         self._leg_phase_offset_left = 0   # saved offset on encoder reset
         self._leg_phase_offset_right = 0
-        self.LEG_OFFSETS = [0, 2, 0, 2, 0, 2]  # L1 L2 L3 R1 R2 R3
+        self.LEG_OFFSETS = CONFIG["hardware"]["motors"]["leg_offsets"]
 
         # Continuous movement state
         self._held_key_code = None   # Qt key code of the held movement key

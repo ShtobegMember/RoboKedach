@@ -530,7 +530,7 @@ class LSM6DSV16X_HeadingTracker:
 
 
 # ========================== Process Entry Point ==========================
-def run_heading_tracker(command_queue, result_queue):
+def run_heading_tracker(command_queue, result_queue, imu_config=None):
     """
     Multiprocessing entry point.  Same interface as before:
       Commands:  'CALIBRATE' | 'LANDED' | 'STOP'
@@ -539,7 +539,10 @@ def run_heading_tracker(command_queue, result_queue):
                  ('STATUS', 'HEADING_ERROR:...')
     """
 
-    tracker = LSM6DSV16X_HeadingTracker()
+    if imu_config:
+        tracker = LSM6DSV16X_HeadingTracker(bus_num=imu_config["bus"], address=imu_config["address"])
+    else:
+        tracker = LSM6DSV16X_HeadingTracker()
 
     try:
         tracker.initialize_sensor()

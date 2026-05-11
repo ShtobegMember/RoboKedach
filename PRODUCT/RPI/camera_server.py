@@ -163,7 +163,7 @@ def video_feed():
     return response
 
 
-def run_server():
+def run_server(port=5000):
     """Initialize camera hardware and start both the reader thread and Flask server."""
 
     print("CAM: Server Thread Starting...")
@@ -178,7 +178,7 @@ def run_server():
     reader_thread.start()
 
     # Flask web server — host 0.0.0.0 to allow access from other machines
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
 
 
 def start_camera_thread():
