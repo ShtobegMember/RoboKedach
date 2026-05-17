@@ -239,6 +239,9 @@ class HUDWindow(QMainWindow):
 
     def update_frame(self, image: QImage):
         pixmap = QPixmap.fromImage(image)
+        # Explicitly copy the image to prevent 0xc0000005 access violations
+        # if the background worker reuses the underlying buffer.
+        pixmap = QPixmap.fromImage(image.copy())
         scaled = pixmap.scaled(
             self.camera_label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,

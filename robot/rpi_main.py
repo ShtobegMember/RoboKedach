@@ -39,11 +39,11 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 # Setup Logging
-logger = logging.getLogger("RPI_MAIN")
-logger.setLevel(logging.INFO)
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(ColoredFormatter('%(asctime)s - [%(levelname)s] - %(message)s', datefmt='%H:%M:%S'))
-logger.addHandler(handler)
+
+logging.basicConfig(level=logging.INFO, handlers=[handler])
+logger = logging.getLogger("RPI_MAIN")
 
 # Global process tracker dictionaries
 procs = {}
