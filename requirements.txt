@@ -4,3 +4,6 @@ Flask
 pyserial
 smbus2
 pyinstaller
+opencv-python
+pytest
+pytest-qt

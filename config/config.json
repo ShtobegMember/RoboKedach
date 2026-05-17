@@ -1,0 +1,67 @@
+{
+  "network": {
+    "pc_ip": "192.168.1.1",
+    "pc_subnet_mask": "255.255.255.0",
+    "pc_network_interface_name": "vEthernet (WSL_Bridge)",
+    "pc_network_name": "Unidentified network",
+    "rpi_ip": "192.168.1.2",
+    "rpi_subnet": "24",
+    "ubt_ip": "192.168.1.0",
+    "ubt_subnet": "24",
+    "motor_port": 55433,
+    "vm_port": 55434,
+    "camera_port": 5000,
+    "ssh": {
+      "host": "ood",
+      "user": "foo",
+      "pass": " "
+    }
+  },
+  "wsl": {
+    "distro": "Ubuntu-24.04",
+    "path": "~/cartographer_ws",
+    "ros_domain_id": 1,
+    "core_commands": {
+      "RViz2": "ros2 run rviz2 rviz2 -d ~/cartographer_ws/src/my_robot_slam/rviz/mapper.rviz",
+      "Cartographer": "ros2 launch my_robot_slam online_slam.launch.py"
+    }
+  },
+  "hardware": {
+    "ina226": {
+      "bus": 3,
+      "address": 64,
+      "shunt_ohms": 0.01
+    },
+    "roboclaw": {
+      "port": "/dev/ttyAMA0",
+      "baud_rate": 38400,
+      "address": 128
+    },
+    "lidar": {
+      "port": "/dev/ttyUSB0",
+      "frame_id": "laser_frame"
+    },
+    "camera": {
+      "device_node": "/dev/video0",
+      "width": 640,
+      "height": 480,
+      "pixelformat": "MJPG"
+    },
+    "motors": {
+      "m1_multiplier": -1,
+      "m2_multiplier": -1,
+      "ticks_per_cycle": 8400,
+      "speed_min": 10,
+      "speed_max": 127,
+      "default_speed": 64,
+      "speed_increment": 10,
+      "diff_speed_increment": 5,
+      "leg_offsets": [0, 2, 0, 2, 0, 2]
+    },
+    "imu": {
+      "bus": 1,
+      "address": 107,
+      "sample_rate": 120.0
+    }
+  }
+}
