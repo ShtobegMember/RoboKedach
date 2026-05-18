@@ -105,6 +105,7 @@ ros2 launch robot_bringup record_c1.launch.py
 # Miscellaneous
 ## Updating RPI code
 > scp .\PRODUCT\RPI\* foo@ood:~/Desktop/PRESENT/
+> scp -r .\core foo@ood:~/robokedach_workspace; scp -r .\robot foo@ood:~/robokedach_workspace; scp -r .\config foo@ood:~/robokedach_workspace
 ## Connecting UBT and RPI to internet
 1. Open "Network Connections"
 2. Share the wifi connection. This will change the wsl_Bridge ip to 192.168.137.1
