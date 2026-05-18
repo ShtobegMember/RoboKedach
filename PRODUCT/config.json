@@ -1,7 +1,13 @@
 {
   "network": {
-    "rpi_ip": "192.168.1.2",
     "pc_ip": "192.168.1.1",
+    "pc_subnet_mask": "255.255.255.0",
+    "pc_network_interface_name": "vEthernet (WSL_Bridge)",
+    "pc_network_name": "Unidentified network",
+    "rpi_ip": "192.168.1.2",
+    "rpi_subnet": "24",
+    "ubt_ip": "192.168.1.0",
+    "ubt_subnet": "24",
     "motor_port": 55433,
     "vm_port": 55434,
     "camera_port": 5000,

@@ -26,6 +26,7 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter, QFont, QColor, QPen, QIcon
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton
 
 
+from network_utils import setup_windows_network, is_windows_network_ready
 # ========================== Configuration ==========================
 def get_config():
     """Load system configuration from config.json."""
@@ -1297,7 +1298,21 @@ class HUDWindow(QMainWindow):
             print(f"RPi stop failed: {e}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":    
+    # 0. Configure windows connection
+    pc_network_interface_name = CONFIG["network"]["pc_network_interface_name"]
+    pc_network_name = CONFIG["network"]["pc_network_name"]
+    pc_ip = CONFIG["network"]["pc_ip"]
+    pc_subnet_mask = CONFIG["network"]["pc_subnet_mask"]
+    
+    print(f"Checking network interface: {pc_network_interface_name}")
+    if not is_windows_network_ready(pc_network_interface_name, pc_ip):
+        print("Network not ready. Attempting configuration (may require Admin)...")
+        setup_windows_network(pc_network_interface_name, pc_network_name, pc_ip, pc_subnet_mask)
+        print("Network configuration command sent.")
+    else:
+        print(f"Windows network interface '{pc_network_interface_name}' is already correctly configured.")
+
     # 1. Tell Windows this is a unique app to fix the taskbar icon
     # We check if the OS is Windows ('nt') so it does not crash on Mac/Linux
     if os.name == 'nt':
